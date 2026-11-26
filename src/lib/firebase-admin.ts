@@ -9,6 +9,7 @@ export const ALL_POST_CATEGORIES = [
   "tanya",
   "rekomendasi",
   "polling",
+  "off-topic",
 ] as const;
 
 export type PostCategory = (typeof ALL_POST_CATEGORIES)[number];
@@ -38,6 +39,10 @@ export interface MangaDoc {
   latestChapterNumber: number;
   genres: string[];
   format: string;
+  authors?: string[];
+  artists?: string[];
+  releaseYear?: string;
+  description?: string;
   popularityRank: number;
   postCount: number;
   lastPostedAt: number;

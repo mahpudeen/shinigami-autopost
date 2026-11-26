@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 
 type TabKey = "mangas" | "autopost" | "autocomment" | "accounts";
-type PostCategory = "teori" | "tanya" | "rekomendasi" | "polling";
+type PostCategory = "teori" | "tanya" | "rekomendasi" | "polling" | "off-topic";
 type AccountRole = "poster" | "voter" | "commenter" | "both" | "all";
 
 interface MangaItem {
@@ -129,7 +129,13 @@ interface LivePost {
   id: string;
   title: string;
   content: string;
+  category?: string;
   manga_title?: string;
+  manga?: {
+    manga_id?: string;
+    title?: string;
+    cover_image_url?: string;
+  } | null;
   is_spoiler?: boolean;
   like_count?: number;
   comment_count?: number;
@@ -176,6 +182,11 @@ const CATEGORY_OPTIONS: Array<{
     key: "polling",
     label: "Polling",
     desc: "Debat seru disertai 3–4 opsi voting",
+  },
+  {
+    key: "off-topic",
+    label: "Off-Topic",
+    desc: "Obrolan santai komunitas (10 sub-topik & trivia Top 50, tanpa manga_id)",
   },
 ];
 
@@ -233,7 +244,13 @@ export default function DashboardPage() {
     koboillmApiKey: "",
     koboillmBaseUrl: "https://api.koboillm.com/v1",
     selectedModel: "gpt-6-luna",
-    enabledCategories: ["teori", "tanya", "rekomendasi", "polling"],
+    enabledCategories: [
+      "teori",
+      "tanya",
+      "rekomendasi",
+      "polling",
+      "off-topic",
+    ],
     lastPostRunAt: 0,
     lastLikeRunAt: 0,
     lastCommentRunAt: 0,
@@ -585,7 +602,7 @@ export default function DashboardPage() {
       setTestResult({ kind: "post", payload: data });
       notify(
         "success",
-        `Berhasil membuat post untuk "${data.manga?.title || "Manga"}" (${data.category}).`
+        `Berhasil membuat post untuk "${data.mangaTitle || data.manga?.title || "Off-Topic (Komunitas)"}" (${data.category}).`
       );
       await Promise.all([
         loadMangas(),
@@ -1677,68 +1694,83 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
-                  {livePosts.map((post) => (
-                    <article
-                      key={post.id}
-                      className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-4"
-                    >
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                          {post.manga_title && (
-                            <span className="rounded bg-indigo-500/15 px-2 py-0.5 font-medium text-indigo-300">
-                              {post.manga_title}
-                            </span>
-                          )}
-                          {post.is_spoiler && (
-                            <span className="rounded bg-rose-500/15 px-2 py-0.5 font-medium text-rose-300">
-                              Spoiler
-                            </span>
-                          )}
-                          {post.poll?.options && post.poll.options.length > 0 && (
-                            <span className="rounded bg-amber-500/15 px-2 py-0.5 font-medium text-amber-300">
-                              Polling
-                            </span>
-                          )}
-                        </div>
-                        <h4 className="mt-2 text-sm font-semibold text-white">
-                          {post.title || "(Tanpa Judul)"}
-                        </h4>
-                        <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed text-slate-300">
-                          {post.content}
-                        </p>
+                  {livePosts.map((post) => {
+                    const resolvedMangaTitle =
+                      post.manga_title || post.manga?.title || "";
+                    const isOffTopic =
+                      post.category === "off-topic" || !resolvedMangaTitle;
 
-                        {post.poll?.options && post.poll.options.length > 0 && (
-                          <ul className="mt-3 space-y-1.5">
-                            {post.poll.options.map((opt, idx) => (
-                              <li
-                                key={opt.id || idx}
-                                className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/70 px-2.5 py-1.5 text-[11px] text-slate-300"
-                              >
-                                <span>{opt.text || opt.option || `Opsi ${idx + 1}`}</span>
-                                <span className="font-mono text-slate-400">
-                                  {opt.vote_count ?? opt.votes_count ?? 0} suara
+                    return (
+                      <article
+                        key={post.id}
+                        className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-4"
+                      >
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                            {isOffTopic ? (
+                              <span className="rounded bg-purple-500/15 px-2 py-0.5 font-medium text-purple-300 ring-1 ring-purple-500/30">
+                                Off-Topic
+                              </span>
+                            ) : (
+                              <span className="rounded bg-indigo-500/15 px-2 py-0.5 font-medium text-indigo-300">
+                                {resolvedMangaTitle}
+                              </span>
+                            )}
+                            {post.is_spoiler && (
+                              <span className="rounded bg-rose-500/15 px-2 py-0.5 font-medium text-rose-300">
+                                Spoiler
+                              </span>
+                            )}
+                            {post.poll?.options &&
+                              post.poll.options.length > 0 && (
+                                <span className="rounded bg-amber-500/15 px-2 py-0.5 font-medium text-amber-300">
+                                  Polling
                                 </span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
+                              )}
+                          </div>
+                          <h4 className="mt-2 text-sm font-semibold text-white">
+                            {post.title || "(Tanpa Judul)"}
+                          </h4>
+                          <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed text-slate-300">
+                            {post.content}
+                          </p>
 
-                      <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px] text-slate-400">
-                        <div className="flex items-center gap-3">
-                          <span className="inline-flex items-center gap-1 text-pink-300">
-                            <Heart className="h-3.5 w-3.5" />
-                            {post.like_count ?? 0}
-                          </span>
-                          <span className="inline-flex items-center gap-1">
-                            <MessageSquare className="h-3.5 w-3.5" />
-                            {post.comment_count ?? 0}
-                          </span>
+                          {post.poll?.options && post.poll.options.length > 0 && (
+                            <ul className="mt-3 space-y-1.5">
+                              {post.poll.options.map((opt, idx) => (
+                                <li
+                                  key={opt.id || idx}
+                                  className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/70 px-2.5 py-1.5 text-[11px] text-slate-300"
+                                >
+                                  <span>
+                                    {opt.text || opt.option || `Opsi ${idx + 1}`}
+                                  </span>
+                                  <span className="font-mono text-slate-400">
+                                    {opt.vote_count ?? opt.votes_count ?? 0}{" "}
+                                    suara
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
-                        <span>{formatDateTime(post.created_at)}</span>
-                      </div>
-                    </article>
-                  ))}
+
+                        <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px] text-slate-400">
+                          <div className="flex items-center gap-3">
+                            <span className="inline-flex items-center gap-1 text-pink-300">
+                              <Heart className="h-3.5 w-3.5" />
+                              {post.like_count ?? 0}
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              {post.comment_count ?? 0}
+                            </span>
+                          </div>
+                          <span>{formatDateTime(post.created_at)}</span>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </div>

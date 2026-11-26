@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { isProjectManga } from "@/lib/comment-templates";
-import { getDb, type AccountDoc, type MangaDoc } from "@/lib/firebase-admin";
+import {
+  getDb,
+  type AccountDoc,
+  type MangaDoc,
+  type PostCategory,
+} from "@/lib/firebase-admin";
 import { refreshAndSyncAccount } from "@/lib/workos";
 
 const SHINIGAMI_API_BASE = "https://api.shinigami.io/v1";
@@ -31,22 +36,27 @@ interface RawMangaItem {
   latest_chapter_number?: number | string;
   genres?: Array<string | RawTaxonomyItem>;
   format?: string;
+  release_year?: string | number | null;
+  description?: string | null;
   taxonomy?: {
     Genre?: RawTaxonomyItem[];
     Format?: RawTaxonomyItem[];
+    Author?: RawTaxonomyItem[];
+    Artist?: RawTaxonomyItem[];
   };
 }
 
 export interface ShinigamiPostItem {
   id: string;
   post_id?: string;
+  category?: string;
   manga_id?: string;
   manga_title?: string;
   manga?: {
     manga_id?: string;
     title?: string;
     cover_image_url?: string;
-  };
+  } | null;
   title: string;
   content: string;
   is_spoiler?: boolean;
@@ -70,16 +80,23 @@ export interface ShinigamiPostItem {
 }
 
 export interface CreatePostPayload {
-  manga_id: string;
+  manga_id?: string;
   title: string;
   content: string;
-  category: "teori" | "tanya" | "rekomendasi" | "polling";
+  category: PostCategory;
   attachments: unknown[];
   is_spoiler: boolean;
   poll?: {
     options: string[];
     closes_at: string;
   };
+}
+
+function extractTaxonomyNames(items?: RawTaxonomyItem[]): string[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((entry) => entry?.name?.trim())
+    .filter((name): name is string => Boolean(name));
 }
 
 function extractGenres(item: RawMangaItem): string[] {
@@ -218,6 +235,16 @@ export async function crawlAndSyncTop300Mangas(): Promise<{
       latestChapterNumber: Number(item.latest_chapter_number ?? 0) || 0,
       genres: extractGenres(item),
       format: extractFormat(item),
+      authors: extractTaxonomyNames(item.taxonomy?.Author),
+      artists: extractTaxonomyNames(item.taxonomy?.Artist),
+      releaseYear:
+        item.release_year !== undefined && item.release_year !== null
+          ? String(item.release_year).trim()
+          : "",
+      description:
+        typeof item.description === "string"
+          ? item.description.trim().slice(0, 400)
+          : "",
       popularityRank: idx + 1,
     };
 
@@ -257,6 +284,98 @@ export async function crawlAndSyncTop300Mangas(): Promise<{
     syncedCount: top300.length,
     deletedCount,
     pagesFetched,
+  };
+}
+
+/**
+ * Picks 1 random manga from Top 50 Popular mangas in Firestore (popularityRank <= 50),
+ * falling back to Shinigami API (limit=50&offset=0&sort=popularity&sort_order=desc) if Firestore is empty.
+ */
+export async function getRandomTop50Manga(): Promise<MangaDoc | null> {
+  try {
+    const db = getDb();
+    const snap = await db
+      .collection("mangas")
+      .orderBy("popularityRank", "asc")
+      .limit(50)
+      .get();
+
+    if (!snap.empty) {
+      const chosenDoc =
+        snap.docs[Math.floor(Math.random() * snap.docs.length)];
+      const data = chosenDoc.data();
+      return {
+        mangaId: String(data.mangaId || chosenDoc.id),
+        title: String(data.title || "Untitled"),
+        coverImageUrl: String(data.coverImageUrl || ""),
+        countryId: String(data.countryId || ""),
+        viewCount: Number(data.viewCount ?? 0),
+        userRate: Number(data.userRate ?? 0),
+        latestChapterNumber: Number(data.latestChapterNumber ?? 0),
+        genres: Array.isArray(data.genres) ? data.genres.map(String) : [],
+        format: String(data.format || ""),
+        authors: Array.isArray(data.authors) ? data.authors.map(String) : [],
+        artists: Array.isArray(data.artists) ? data.artists.map(String) : [],
+        releaseYear:
+          typeof data.releaseYear === "string" ? data.releaseYear : "",
+        description:
+          typeof data.description === "string" ? data.description : "",
+        popularityRank: Number(data.popularityRank ?? 0),
+        postCount: Number(data.postCount ?? 0),
+        lastPostedAt: Number(data.lastPostedAt ?? 0),
+      };
+    }
+  } catch {
+    // Fall through to live Shinigami API fallback
+  }
+
+  const url = `${SHINIGAMI_API_BASE}/manga/list?limit=50&offset=0&sort=popularity&sort_order=desc`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: SHINIGAMI_HEADERS,
+    signal: AbortSignal.timeout(20_000),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const json = await res.json().catch(() => null);
+  const items = parseMangaListPayload(json);
+  if (items.length === 0) {
+    return null;
+  }
+
+  const idx = Math.floor(Math.random() * items.length);
+  const item = items[idx];
+  return {
+    mangaId: String(item.manga_id || item.id || "").trim(),
+    title: item.title?.trim() || "Untitled Manga",
+    coverImageUrl: (
+      item.cover_image_url ||
+      item.cover_portrait_url ||
+      ""
+    ).trim(),
+    countryId: item.country_id?.trim() || "",
+    viewCount: Number(item.view_count ?? 0) || 0,
+    userRate: Number(item.user_rate ?? item.rating ?? 0) || 0,
+    latestChapterNumber: Number(item.latest_chapter_number ?? 0) || 0,
+    genres: extractGenres(item),
+    format: extractFormat(item),
+    authors: extractTaxonomyNames(item.taxonomy?.Author),
+    artists: extractTaxonomyNames(item.taxonomy?.Artist),
+    releaseYear:
+      item.release_year !== undefined && item.release_year !== null
+        ? String(item.release_year).trim()
+        : "",
+    description:
+      typeof item.description === "string"
+        ? item.description.trim().slice(0, 400)
+        : "",
+    popularityRank: idx + 1,
+    postCount: 0,
+    lastPostedAt: 0,
   };
 }
 
@@ -307,6 +426,27 @@ export async function createShinigamiPost(
   account: AccountDoc;
   refreshed: boolean;
 }> {
+  const requestBody: Record<string, unknown> =
+    payload.category === "off-topic"
+      ? {
+          title: payload.title,
+          content: payload.content,
+          category: "off-topic",
+          attachments: [],
+          is_spoiler: Boolean(payload.is_spoiler),
+        }
+      : {
+          title: payload.title,
+          content: payload.content,
+          category: payload.category,
+          attachments: payload.attachments ?? [],
+          is_spoiler: Boolean(payload.is_spoiler),
+          ...(payload.manga_id ? { manga_id: payload.manga_id } : {}),
+          ...(payload.category === "polling" && payload.poll
+            ? { poll: payload.poll }
+            : {}),
+        };
+
   const { response, account: updatedAccount, refreshed } =
     await fetchWithAutoRefresh(account, (token) =>
       fetch(`${SHINIGAMI_API_BASE}/posts`, {
@@ -316,7 +456,7 @@ export async function createShinigamiPost(
           "content-type": "application/json",
           authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(requestBody),
         cache: "no-store",
       })
     );
@@ -346,6 +486,26 @@ function normalizePostItem(raw: Record<string, unknown>): ShinigamiPostItem {
     ...raw,
     id,
     post_id: id,
+    category:
+      typeof raw.category === "string"
+        ? raw.category
+        : typeof raw.kind === "string"
+          ? raw.kind
+          : undefined,
+    manga: mangaObj
+      ? {
+          manga_id:
+            typeof mangaObj.manga_id === "string"
+              ? mangaObj.manga_id
+              : undefined,
+          title:
+            typeof mangaObj.title === "string" ? mangaObj.title : undefined,
+          cover_image_url:
+            typeof mangaObj.cover_image_url === "string"
+              ? mangaObj.cover_image_url
+              : undefined,
+        }
+      : null,
     manga_id:
       typeof raw.manga_id === "string"
         ? raw.manga_id

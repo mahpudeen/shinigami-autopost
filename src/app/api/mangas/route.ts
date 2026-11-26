@@ -22,6 +22,12 @@ export async function GET() {
         latestChapterNumber: Number(data.latestChapterNumber ?? 0),
         genres: Array.isArray(data.genres) ? data.genres.map(String) : [],
         format: String(data.format || ""),
+        authors: Array.isArray(data.authors) ? data.authors.map(String) : [],
+        artists: Array.isArray(data.artists) ? data.artists.map(String) : [],
+        releaseYear:
+          typeof data.releaseYear === "string" ? data.releaseYear : "",
+        description:
+          typeof data.description === "string" ? data.description : "",
         popularityRank: Number(data.popularityRank ?? 0),
         postCount: Number(data.postCount ?? 0),
         lastPostedAt: Number(data.lastPostedAt ?? 0),

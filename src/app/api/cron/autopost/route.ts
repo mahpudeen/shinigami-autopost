@@ -11,7 +11,10 @@ import {
   type PostCategory,
 } from "@/lib/firebase-admin";
 import { generatePostWithKoboiLLM } from "@/lib/koboillm";
-import { createShinigamiPost, type CreatePostPayload } from "@/lib/shinigami-api";
+import {
+  createShinigamiPost,
+  type CreatePostPayload,
+} from "@/lib/shinigami-api";
 
 async function handleAutoPost(request: NextRequest) {
   const auth = verifyCronAccess(request);
@@ -35,7 +38,7 @@ async function handleAutoPost(request: NextRequest) {
 
     const db = getDb();
 
-    // Fetch active poster accounts ("poster" or "both")
+    // Fetch active poster accounts ("poster", "both", or "all")
     const accountsSnap = await db
       .collection("accounts")
       .where("isActive", "==", true)
@@ -77,6 +80,70 @@ async function handleAutoPost(request: NextRequest) {
     const chosenAccount =
       posterAccounts[Math.floor(Math.random() * posterAccounts.length)];
 
+    const categories: PostCategory[] =
+      settings.enabledCategories.length > 0
+        ? settings.enabledCategories
+        : [...ALL_POST_CATEGORIES];
+    const chosenCategory =
+      categories[Math.floor(Math.random() * categories.length)];
+
+    // Branch 1: Global community "off-topic" post (no manga_id, skip Top 300 queue Read/Write)
+    if (chosenCategory === "off-topic") {
+      const generated = await generatePostWithKoboiLLM({
+        apiKey: settings.koboillmApiKey,
+        baseUrl: settings.koboillmBaseUrl,
+        model: settings.selectedModel,
+        category: "off-topic",
+      });
+
+      const payload: CreatePostPayload = {
+        title: generated.title,
+        content: generated.content,
+        category: "off-topic",
+        attachments: [],
+        is_spoiler: generated.is_spoiler,
+      };
+
+      const postResult = await createShinigamiPost(chosenAccount, payload);
+      const now = Date.now();
+
+      await db
+        .collection("settings")
+        .doc("autopost")
+        .set({ lastPostRunAt: now }, { merge: true });
+
+      return NextResponse.json({
+        ok: true,
+        skipped: false,
+        manual: auth.isManualTest,
+        account: {
+          id: postResult.account.id,
+          name: postResult.account.name,
+          email: postResult.account.email,
+          tokenRefreshed: postResult.refreshed,
+        },
+        mangaTitle: "Off-Topic (Komunitas)",
+        manga: {
+          mangaId: null,
+          title: "Off-Topic (Komunitas)",
+          popularityRank: null,
+        },
+        category: "off-topic",
+        offTopicAngle: generated.offTopicAngle || null,
+        referencedMangaTitle: generated.referencedMangaTitle || null,
+        model: settings.selectedModel,
+        post: {
+          title: generated.title,
+          content: generated.content,
+          is_spoiler: generated.is_spoiler,
+          poll_options: null,
+        },
+        shinigamiResponse: postResult.data,
+        executedAt: now,
+      });
+    }
+
+    // Branch 2: Manga-bound categories (teori, tanya, rekomendasi, polling)
     // Fetch exactly 1 manga with the oldest lastPostedAt (only 1 Firestore Read)
     const mangaSnap = await db
       .collection("mangas")
@@ -107,17 +174,14 @@ async function handleAutoPost(request: NextRequest) {
       latestChapterNumber: Number(m.latestChapterNumber ?? 0),
       genres: Array.isArray(m.genres) ? m.genres.map(String) : [],
       format: String(m.format || ""),
+      authors: Array.isArray(m.authors) ? m.authors.map(String) : [],
+      artists: Array.isArray(m.artists) ? m.artists.map(String) : [],
+      releaseYear: typeof m.releaseYear === "string" ? m.releaseYear : "",
+      description: typeof m.description === "string" ? m.description : "",
       popularityRank: Number(m.popularityRank ?? 0),
       postCount: Number(m.postCount ?? 0),
       lastPostedAt: Number(m.lastPostedAt ?? 0),
     };
-
-    const categories: PostCategory[] =
-      settings.enabledCategories.length > 0
-        ? settings.enabledCategories
-        : [...ALL_POST_CATEGORIES];
-    const chosenCategory =
-      categories[Math.floor(Math.random() * categories.length)];
 
     const generated = await generatePostWithKoboiLLM({
       apiKey: settings.koboillmApiKey,
@@ -143,7 +207,9 @@ async function handleAutoPost(request: NextRequest) {
     ) {
       payload.poll = {
         options: generated.poll_options.slice(0, 4),
-        closes_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+        closes_at: new Date(
+          Date.now() + 3 * 24 * 60 * 60 * 1000
+        ).toISOString(),
       };
     }
 
@@ -177,6 +243,7 @@ async function handleAutoPost(request: NextRequest) {
         email: postResult.account.email,
         tokenRefreshed: postResult.refreshed,
       },
+      mangaTitle: manga.title,
       manga: {
         mangaId: manga.mangaId,
         title: manga.title,

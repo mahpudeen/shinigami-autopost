@@ -3,13 +3,116 @@ import {
   type MangaDoc,
   type PostCategory,
 } from "@/lib/firebase-admin";
+import { getRandomTop50Manga } from "@/lib/shinigami-api";
 
 export interface GeneratedPostContent {
   title: string;
   content: string;
   is_spoiler: boolean;
   poll_options?: string[];
+  offTopicAngle?: string;
+  referencedMangaTitle?: string;
 }
+
+export interface OffTopicAngle {
+  id: number;
+  name: string;
+  focus: string;
+  inspiration: string;
+  useTop50Context?: boolean;
+}
+
+export const OFF_TOPIC_ANGLES: readonly OffTopicAngle[] = [
+  {
+    id: 1,
+    name: "Kebiasaan & Ritual Baca Komik",
+    focus: "Kebiasaan membaca komik sehari-hari yang dekat dan relatable dengan pembaca.",
+    inspiration:
+      'Misalnya: "Tim maraton pas chapter udah numpuk 50+, atau tim langsung gas baca tiap minggu walau ngegantung?" atau "Posisi paling enak buat baca komik kalian apa? Rebahan miring sampai HP jatuh ke muka, atau sambil ngopi?"',
+  },
+  {
+    id: 2,
+    name: "Curhat Cliffhanger / Chapter Ngegantung",
+    focus: "Rasa gemas saat bacaan dipotong tepat di momen klimaks atau pertarungan seru.",
+    inspiration:
+      'Misalnya: "Lagi seru-serunya mau tebas musuh eh tiba-tiba tulisan Bersambung, rasanya pengen lempar HP gak sih?"',
+  },
+  {
+    id: 3,
+    name: "Trope & Klise Favorit / Paling Bikin Kesel",
+    focus:
+      "Pola cerita umum di manhwa/manga/manhua (regresi, murim, villainess, dungeon, sistem) yang klise tapi tetap bikin nagih atau justru bikin kesal.",
+    inspiration:
+      'Misalnya: "Klise manhwa murim/regresi apa yang sebenernya udah ketebak banget tapi tetep aja seru buat dibaca?" atau "Lebih suka MC yang OP dari awal tanpa ampun, atau MC yang merangkak dari nol tapi taktiknya licik?"',
+  },
+  {
+    id: 4,
+    name: "Rekomendasi Lintas Genre / Cari Bacaan Baru",
+    focus:
+      "Bertanya atau meminta saran bacaan baru dari pembaca lain saat habis menamatkan serial favorit atau sedang fase kosong.",
+    inspiration:
+      'Misalnya: "Habis tamatin bacaan utama rasanya hampa banget. Kalian kalau lagi fase kosong gini biasanya ngapain atau baca genre apa?" atau "Ada yang lagi ngikutin manhwa action/fantasi yang underrated tapi art-nya gokil?"',
+  },
+  {
+    id: 5,
+    name: "Obrolan Santai Malam / Akhir Pekan Pembaca",
+    focus: "Suasana begadang baca komik atau maraton di akhir pekan.",
+    inspiration:
+      'Misalnya: "Jam segini masih melek gara-gara bilang satu chapter lagi deh dari jam 11 malam, ada temennya?"',
+  },
+  {
+    id: 6,
+    name: "Adaptasi Anime / Live Action vs Versi Manhwa/Manga",
+    focus: "Perbandingan kualitas adaptasi anime atau drama dengan sumber komiknya.",
+    inspiration:
+      'Misalnya: "Menurut kalian adaptasi anime dari manhwa belakangan ini udah sesuai ekspektasi belum, atau tetep lebih dapet feel-nya pas baca komiknya?"',
+  },
+  {
+    id: 7,
+    name: "Unpopular Opinion / Pendapat Kontroversial",
+    focus:
+      "Mengajak pembaca berbagi pendapat jujur soal serial populer yang terasa overrated atau serial sepi pembaca yang justru underrated.",
+    inspiration:
+      'Misalnya: "Coba sebutin satu manhwa/manga populer yang menurut kalian agak overrated, atau sebaliknya yang underrated padahal ceritanya bagus banget."',
+  },
+  {
+    id: 8,
+    name: "First Love / Komik Gerbang Pembuka",
+    focus:
+      "Nostalgia judul komik pertama yang membuat pembaca mulai hobi membaca manga/manhwa/manhua.",
+    inspiration:
+      'Misalnya: "Judul manhwa/manga pertama yang bikin kalian ketagihan baca komik sampai sekarang judulnya apa?"',
+  },
+  {
+    id: 9,
+    name: "Rating & Standar Art Style",
+    focus:
+      "Prioritas pembaca antara kualitas visual (art style) dengan kekuatan alur cerita (storyline).",
+    inspiration:
+      'Misalnya: "Kalau cerita bagus tapi art-nya biasa aja vs art dewa tapi cerita standar, kalian tim yang mana?"',
+  },
+  {
+    id: 10,
+    name: "Trivia Author / Studio & Bahasan Top 50 Komik Populer",
+    focus:
+      "Membahas salah satu komik dari Top 50 Populer atau karya author/studio-nya secara santai berdasarkan data fakta nyata yang diberikan.",
+    inspiration:
+      'Misalnya membahas daya tarik karya author/studio tertentu atau menyinggung judul Top 50 Populer dari data nyata yang disediakan lalu mengajak pembaca diskusi santai.',
+    useTop50Context: true,
+  },
+];
+
+const OFF_TOPIC_SYSTEM_PROMPT = `Kamu adalah pembaca aktif di komunitas komik Shinigami yang suka mengajak pembaca lain ngobrol santai.
+TUGAS: Buat 1 postingan forum kategori "off-topic" dalam bahasa Indonesia santai, natural, dan memancing diskusi.
+ATURAN KERAS:
+- DILARANG bertanya balik kepada user, DILARANG meminta klarifikasi, DILARANG menawarkan format/tabel.
+- DILARANG menggunakan tanda kurung siku placeholder seperti [Judul] atau [Nama].
+- DILARANG menulis markdown heading (#), bullet list, atau hashtag (#).
+- Gunakan maksimal 1-2 emoji saja.
+- Panjang judul (title): 20-80 karakter, menarik dan langsung ke inti obrolan.
+- Panjang isi (content): 100-280 karakter, terasa seperti ketikan manusia di forum komik.
+- Output WAJIB berupa JSON valid tanpa teks tambahan:
+  {"title":"...","content":"...","is_spoiler":false}`;
 
 export function sanitizeBaseUrl(rawUrl?: string): string {
   if (!rawUrl || !rawUrl.trim()) return DEFAULT_KOBOILLM_BASE_URL;
@@ -95,9 +198,51 @@ export async function fetchKoboiModels(
   return Array.from(new Set(models));
 }
 
-function buildPostPrompts(
+function buildOffTopicUserPrompt(
+  angle: OffTopicAngle,
+  top50Manga?: MangaDoc | null
+): string {
+  const lines: string[] = [
+    `Sub-Topik Obrolan (#${angle.id}): ${angle.name}`,
+    `Fokus: ${angle.focus}`,
+    `Inspirasi gaya obrolan (buat versi baru yang segar, jangan copy-paste persis): ${angle.inspiration}`,
+  ];
+
+  if (angle.useTop50Context && top50Manga) {
+    const factLines = [
+      "",
+      "Data Fakta Nyata Komik Top 50 Populer Shinigami (GUNAKAN fakta ini saja, jangan mengarang rilis baru atau informasi di luar data):",
+      `- Judul: ${top50Manga.title}`,
+      top50Manga.format ? `- Format: ${top50Manga.format}` : null,
+      top50Manga.genres.length > 0
+        ? `- Genre: ${top50Manga.genres.join(", ")}`
+        : null,
+      top50Manga.authors && top50Manga.authors.length > 0
+        ? `- Author: ${top50Manga.authors.join(", ")}`
+        : null,
+      top50Manga.artists && top50Manga.artists.length > 0
+        ? `- Artist: ${top50Manga.artists.join(", ")}`
+        : null,
+      top50Manga.releaseYear ? `- Tahun Rilis: ${top50Manga.releaseYear}` : null,
+      top50Manga.description
+        ? `- Ringkasan: ${top50Manga.description.slice(0, 260)}`
+        : null,
+    ].filter((line): line is string => line !== null);
+
+    lines.push(...factLines);
+  }
+
+  lines.push(
+    "",
+    'Langsung tulis 1 post obrolan "off-topic" sekarang dalam format JSON murni {"title":"...","content":"...","is_spoiler":false} tanpa bertanya balik.'
+  );
+
+  return lines.join("\n");
+}
+
+function buildMangaPostPrompts(
   manga: MangaDoc,
-  category: PostCategory
+  category: Exclude<PostCategory, "off-topic">
 ): { systemPrompt: string; userPrompt: string } {
   const genreText = manga.genres.length > 0 ? manga.genres.join(", ") : "Komik";
   const formatText = manga.format || "Manga/Manhwa";
@@ -140,6 +285,7 @@ function buildPostPrompts(
   const systemPrompt = [
     "Kamu adalah pembaca aktif komunitas forum komik/manhwa/manga Indonesia di Shinigami.",
     "Tugasmu membuat 1 postingan forum komunitas yang menarik, hidup, dan natural.",
+    "DILARANG bertanya balik kepada user, DILARANG meminta klarifikasi, DILARANG memakai placeholder [Judul].",
     'PENTING: WAJIB membalas HANYA dalam format JSON valid murni tanpa markdown code block (```json) dengan skema:',
     '{ "title": "Judul diskusi menarik (maks 100 karakter)", "content": "Isi pembahasan santai (120-350 karakter)", "is_spoiler": false, "poll_options": ["Opsi 1", "Opsi 2", "Opsi 3"] }',
     "Catatan: poll_options hanya diisi jika kategori adalah polling (3-4 opsi singkat).",
@@ -188,7 +334,7 @@ export async function generatePostWithKoboiLLM(params: {
   apiKey: string;
   baseUrl?: string;
   model: string;
-  manga: MangaDoc;
+  manga?: MangaDoc | null;
   category: PostCategory;
 }): Promise<GeneratedPostContent> {
   const key = params.apiKey.trim();
@@ -198,10 +344,37 @@ export async function generatePostWithKoboiLLM(params: {
 
   const modelName = params.model.trim() || "gpt-6-luna";
   const endpoint = `${sanitizeBaseUrl(params.baseUrl)}/chat/completions`;
-  const { systemPrompt, userPrompt } = buildPostPrompts(
-    params.manga,
-    params.category
-  );
+
+  let systemPrompt: string;
+  let userPrompt: string;
+  let offTopicAngle: string | undefined;
+  let referencedMangaTitle: string | undefined;
+
+  if (params.category === "off-topic") {
+    const chosenAngle =
+      OFF_TOPIC_ANGLES[Math.floor(Math.random() * OFF_TOPIC_ANGLES.length)];
+    offTopicAngle = chosenAngle.name;
+
+    let top50Manga: MangaDoc | null = null;
+    if (chosenAngle.useTop50Context) {
+      top50Manga = await getRandomTop50Manga();
+      if (top50Manga) {
+        referencedMangaTitle = top50Manga.title;
+      }
+    }
+
+    systemPrompt = OFF_TOPIC_SYSTEM_PROMPT;
+    userPrompt = buildOffTopicUserPrompt(chosenAngle, top50Manga);
+  } else {
+    if (!params.manga) {
+      throw new Error(
+        `Data manga wajib tersedia untuk kategori '${params.category}'.`
+      );
+    }
+    const prompts = buildMangaPostPrompts(params.manga, params.category);
+    systemPrompt = prompts.systemPrompt;
+    userPrompt = prompts.userPrompt;
+  }
 
   const isReasoning = isReasoningModelName(modelName);
   const headers = {
@@ -210,9 +383,8 @@ export async function generatePostWithKoboiLLM(params: {
     authorization: `Bearer ${key}`,
   };
 
-  // Multi-tier fallback strategy matching aura-farming-shinigami:
-  // Reasoning models (luna, sol, o1, o3, gpt-5, etc.) reject temperature != 1 and response_format.
-  // drop_params: true tells LiteLLM proxy on KoboiLLM to silently drop unsupported params.
+  // Prefer response_format: { type: "json_object" } first (especially for off-topic),
+  // with automatic graceful fallback if a reasoning model rejects response_format or temperature != 1.
   const attempts: Array<{
     withResponseFormat: boolean;
     combinePrompt: boolean;
@@ -221,6 +393,9 @@ export async function generatePostWithKoboiLLM(params: {
     omitTemperature?: boolean;
   }> = isReasoning
     ? [
+        ...(params.category === "off-topic"
+          ? [{ withResponseFormat: true, combinePrompt: false, temperature: 1 }]
+          : []),
         { withResponseFormat: false, combinePrompt: false, temperature: 1 },
         { withResponseFormat: false, combinePrompt: true, temperature: 1 },
         {
@@ -308,7 +483,8 @@ export async function generatePostWithKoboiLLM(params: {
           break;
         }
 
-        lastErrorText = "KoboiLLM mengembalikan choices[0].message.content kosong.";
+        lastErrorText =
+          "KoboiLLM mengembalikan choices[0].message.content kosong.";
         if (i < attempts.length - 1) continue;
         break;
       } else {
@@ -354,15 +530,36 @@ export async function generatePostWithKoboiLLM(params: {
     );
   }
 
+  const cleanText = (val: unknown) =>
+    String(val || "")
+      .replace(/#\S+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const fallbackTitle =
+    params.category === "off-topic"
+      ? "Obrolan santai pembaca komik hari ini"
+      : `Diskusi ${params.manga?.title || "Komik"}`;
+
+  const fallbackContent =
+    params.category === "off-topic"
+      ? "Lagi pada baca komik apa nih sekarang? Cerita dong judul yang bikin kalian susah berhenti baca belakangan ini!"
+      : `Gimana pendapat kalian tentang ${params.manga?.title || "komik ini"}?`;
+
+  const maxTitleLen = params.category === "off-topic" ? 80 : 100;
   const title =
-    String(parsed.title || "")
-      .replace(/#\S+/g, "")
-      .trim()
-      .slice(0, 100) || `Diskusi ${params.manga.title}`;
-  const content =
-    String(parsed.content || "")
-      .replace(/#\S+/g, "")
-      .trim() || `Gimana pendapat kalian tentang ${params.manga.title}?`;
+    cleanText(parsed.title).slice(0, maxTitleLen) || fallbackTitle;
+  const content = cleanText(parsed.content) || fallbackContent;
+
+  if (params.category === "off-topic") {
+    return {
+      title,
+      content,
+      is_spoiler: Boolean(parsed.is_spoiler),
+      offTopicAngle,
+      referencedMangaTitle,
+    };
+  }
 
   const isSpoiler =
     params.category === "polling"
