@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   BookOpen,
@@ -20,6 +21,7 @@ import {
   Heart,
   KeyRound,
   Loader2,
+  LogOut,
   MessageSquare,
   Play,
   Plus,
@@ -164,8 +166,10 @@ function useClientOrigin(): string {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<TabKey>("mangas");
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const origin = useClientOrigin();
 
   // Tab 1: Mangas
@@ -713,6 +717,18 @@ export default function DashboardPage() {
     return Array.from(set);
   }, [models, settings.selectedModel]);
 
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      router.replace("/login");
+      router.refresh();
+    } catch {
+      setLoggingOut(false);
+      notify("error", "Gagal keluar dari sesi.");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {/* Header */}
@@ -761,6 +777,20 @@ export default function DashboardPage() {
               />
               Auto-Like: {settings.isLikeEnabled ? "ON" : "OFF"}
             </span>
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={loggingOut}
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-700/90 bg-slate-900 px-3 py-1 font-medium text-slate-300 transition hover:border-slate-600 hover:bg-slate-800 hover:text-white disabled:opacity-50"
+              title="Keluar dari Dashboard"
+            >
+              {loggingOut ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <LogOut className="h-3.5 w-3.5" />
+              )}
+              Keluar
+            </button>
           </div>
         </div>
 

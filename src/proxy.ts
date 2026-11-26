@@ -1,24 +1,39 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { verifyBasicAuth } from "@/lib/auth";
+import { isDashboardAuthenticated } from "@/lib/auth";
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Cron endpoints handle their own authorization via CRON_SECRET or Basic Auth bypass
+  // Allow auth endpoints and cron endpoints (cron validates CRON_SECRET / session itself)
   if (
+    pathname.startsWith("/api/auth/login") ||
+    pathname.startsWith("/api/auth/logout") ||
     pathname.startsWith("/api/cron/autopost") ||
     pathname.startsWith("/api/cron/autolike")
   ) {
     return NextResponse.next();
   }
 
-  if (!verifyBasicAuth(request)) {
-    return new NextResponse("Unauthorized", {
-      status: 401,
-      headers: {
-        "WWW-Authenticate": 'Basic realm="Shinigami Autopost Dashboard"',
-      },
-    });
+  const authenticated = isDashboardAuthenticated(request);
+
+  // Login page: redirect straight to dashboard if already authenticated
+  if (pathname === "/login") {
+    if (authenticated) {
+      return NextResponse.redirect(new URL("/", request.url));
+    }
+    return NextResponse.next();
+  }
+
+  if (!authenticated) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json(
+        { ok: false, error: "Unauthorized. Silakan login terlebih dahulu." },
+        { status: 401 }
+      );
+    }
+
+    const loginUrl = new URL("/login", request.url);
+    return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();
