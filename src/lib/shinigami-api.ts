@@ -1,7 +1,10 @@
+import crypto from "node:crypto";
+import { isProjectManga } from "@/lib/comment-templates";
 import { getDb, type AccountDoc, type MangaDoc } from "@/lib/firebase-admin";
 import { refreshAndSyncAccount } from "@/lib/workos";
 
 const SHINIGAMI_API_BASE = "https://api.shinigami.io/v1";
+const SHINIGAMI_COMMENT_API_BASE = "https://api.shinigami.io/comment/api/v2";
 
 const SHINIGAMI_HEADERS: Record<string, string> = {
   accept: "application/json, text/plain, */*",
@@ -495,6 +498,217 @@ export async function likeShinigamiPost(
   return {
     ok: response.ok,
     status: response.status,
+    account: updatedAccount,
+    refreshed,
+  };
+}
+
+export interface LatestChapterItem {
+  chapter_id: string;
+  chapter_number: number;
+  created_at?: string;
+}
+
+export interface LatestMangaItem {
+  manga_id: string;
+  title: string;
+  cover_image_url: string;
+  country_id: string;
+  format: string;
+  isProject: boolean;
+  typeLabel: string;
+  taxonomy?: {
+    Type?: Array<{ name?: string; slug?: string }>;
+  };
+  chapters: LatestChapterItem[];
+}
+
+export interface ChapterCommentItem {
+  id?: number;
+  username: string;
+  content: string;
+  date?: string;
+}
+
+/**
+ * Fetches latest updated mangas with their recent chapters & taxonomy.Type directly from Shinigami API.
+ */
+export async function getLatestMangas(
+  limit = 20,
+  offset = 0
+): Promise<LatestMangaItem[]> {
+  const url = `${SHINIGAMI_API_BASE}/manga/list?sort=latest&sort_order=desc&offset=${offset}&limit=${limit}&is_update=true`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: SHINIGAMI_HEADERS,
+    signal: AbortSignal.timeout(25_000),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Gagal fetch daftar manga terbaru Shinigami (HTTP ${response.status})`
+    );
+  }
+
+  const json = (await response.json()) as { data?: unknown };
+  const rawList = Array.isArray(json.data) ? json.data : [];
+
+  return rawList
+    .filter((item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object")
+    )
+    .map((item) => {
+      const mangaId = String(item.manga_id || item.id || "").trim();
+      const taxonomy =
+        item.taxonomy && typeof item.taxonomy === "object"
+          ? (item.taxonomy as {
+              Type?: Array<{ name?: string; slug?: string }>;
+              Format?: Array<{ name?: string }>;
+            })
+          : undefined;
+      const rawChapters = Array.isArray(item.chapters) ? item.chapters : [];
+      const chapters: LatestChapterItem[] = rawChapters
+        .filter((ch): ch is Record<string, unknown> =>
+          Boolean(ch && typeof ch === "object")
+        )
+        .map((ch) => ({
+          chapter_id: String(ch.chapter_id || ch.id || "").trim(),
+          chapter_number: Number(ch.chapter_number ?? 0) || 0,
+          created_at:
+            typeof ch.created_at === "string" ? ch.created_at : undefined,
+        }))
+        .filter((ch) => Boolean(ch.chapter_id));
+
+      const title = String(item.title || "Untitled").trim();
+      const isProject = isProjectManga({ title, taxonomy });
+      const typeLabel =
+        taxonomy?.Type?.[0]?.name?.trim() || (isProject ? "Project" : "Mirror");
+
+      return {
+        manga_id: mangaId,
+        title,
+        cover_image_url: String(
+          item.cover_image_url || item.cover_portrait_url || ""
+        ).trim(),
+        country_id: String(item.country_id || "").trim(),
+        format: String(
+          taxonomy?.Format?.[0]?.name || item.format || ""
+        ).trim(),
+        isProject,
+        typeLabel,
+        taxonomy: taxonomy?.Type ? { Type: taxonomy.Type } : undefined,
+        chapters,
+      };
+    })
+    .filter((m) => Boolean(m.manga_id));
+}
+
+/**
+ * Fetches existing comments on a specific manga chapter to prevent duplicate comments per account.
+ */
+export async function getChapterComments(
+  mangaId: string,
+  chapterId: string,
+  limit = 50
+): Promise<{ comments: ChapterCommentItem[]; count: number }> {
+  const pageKey = `manga:${mangaId}:chapter:${chapterId}`;
+  const url = `${SHINIGAMI_COMMENT_API_BASE}/comments?page_key=${encodeURIComponent(pageKey)}&offset=0&limit=${limit}`;
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: SHINIGAMI_HEADERS,
+    signal: AbortSignal.timeout(20_000),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Gagal cek komentar chapter ${chapterId} (HTTP ${response.status})`
+    );
+  }
+
+  const json = (await response.json().catch(() => ({}))) as {
+    comments?: Array<Record<string, unknown>>;
+    count?: number;
+  };
+
+  const rawComments = Array.isArray(json.comments) ? json.comments : [];
+  const comments: ChapterCommentItem[] = rawComments.map((c) => ({
+    id: typeof c.id === "number" ? c.id : undefined,
+    username: String(c.username || c.nick || c.user_name || "").trim(),
+    content: String(c.content || ""),
+    date: typeof c.date === "string" ? c.date : undefined,
+  }));
+
+  return {
+    comments,
+    count: typeof json.count === "number" ? json.count : comments.length,
+  };
+}
+
+/**
+ * Sends a new chapter comment to Shinigami with automatic WorkOS token refresh & 1x retry on 401/403.
+ */
+export async function postChapterComment(
+  account: AccountDoc,
+  mangaId: string,
+  chapterId: string,
+  content: string
+): Promise<{
+  ok: boolean;
+  status: number;
+  commentId?: number;
+  error?: string;
+  account: AccountDoc;
+  refreshed: boolean;
+}> {
+  const pageKey = `manga:${mangaId}:chapter:${chapterId}`;
+  const idempotencyKey = crypto.randomUUID();
+  const url = `${SHINIGAMI_COMMENT_API_BASE}/comments`;
+
+  const { response, account: updatedAccount, refreshed } =
+    await fetchWithAutoRefresh(account, (token) =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          ...SHINIGAMI_HEADERS,
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          content,
+          page_key: pageKey,
+          idempotency_key: idempotencyKey,
+        }),
+        signal: AbortSignal.timeout(25_000),
+        cache: "no-store",
+      })
+    );
+
+  const json = (await response.json().catch(() => ({}))) as {
+    id?: number;
+    comment_id?: number;
+    message?: string;
+    data?: { id?: number; comment_id?: number };
+  };
+
+  if (response.ok || response.status === 201) {
+    const rawId =
+      json?.data?.id ?? json?.data?.comment_id ?? json?.comment_id ?? json?.id;
+    return {
+      ok: true,
+      status: response.status,
+      commentId: rawId !== undefined ? Number(rawId) : undefined,
+      account: updatedAccount,
+      refreshed,
+    };
+  }
+
+  return {
+    ok: false,
+    status: response.status,
+    error: json?.message || `HTTP ${response.status}`,
     account: updatedAccount,
     refreshed,
   };

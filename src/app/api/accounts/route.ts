@@ -7,7 +7,13 @@ import {
 } from "@/lib/firebase-admin";
 import { authenticateWithWorkOS, refreshAndSyncAccount } from "@/lib/workos";
 
-const VALID_ROLES: AccountRole[] = ["poster", "voter", "both"];
+const VALID_ROLES: AccountRole[] = [
+  "poster",
+  "voter",
+  "commenter",
+  "both",
+  "all",
+];
 
 function maskToken(token: string): string {
   if (!token) return "";
@@ -19,6 +25,7 @@ function toSafeAccount(doc: AccountDoc) {
   return {
     id: doc.id,
     name: doc.name,
+    username: doc.username,
     email: doc.email,
     avatarUrl: doc.avatarUrl,
     role: doc.role,
@@ -43,6 +50,7 @@ function docToAccount(
   return {
     id,
     name: String(data.name || "Shinigami User"),
+    username: typeof data.username === "string" ? data.username.trim() : "",
     email: String(data.email || ""),
     avatarUrl: String(data.avatarUrl || ""),
     role,
@@ -79,6 +87,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
+      username?: string;
       refreshToken?: string;
       accessToken?: string;
       clientId?: string;
@@ -86,6 +95,10 @@ export async function POST(request: NextRequest) {
       isActive?: boolean;
     };
 
+    const username =
+      typeof body.username === "string"
+        ? body.username.trim().replace(/^@+/, "")
+        : "";
     const refreshToken = body.refreshToken?.trim() || "";
     const clientId = body.clientId?.trim() || DEFAULT_CLIENT_ID;
     const role: AccountRole = VALID_ROLES.includes(body.role as AccountRole)
@@ -109,6 +122,7 @@ export async function POST(request: NextRequest) {
     const ref = db.collection("accounts").doc();
     const accountData: Omit<AccountDoc, "id"> = {
       name: profile.name,
+      username,
       email: profile.email,
       avatarUrl: profile.avatarUrl,
       role,
@@ -141,6 +155,7 @@ export async function PATCH(request: NextRequest) {
     const body = (await request.json()) as {
       id?: string;
       action?: "refresh" | "update";
+      username?: string;
       role?: AccountRole;
       isActive?: boolean;
       refreshToken?: string;
@@ -184,6 +199,9 @@ export async function PATCH(request: NextRequest) {
 
     if (typeof body.isActive === "boolean") {
       patch.isActive = body.isActive;
+    }
+    if (typeof body.username === "string") {
+      patch.username = body.username.trim().replace(/^@+/, "");
     }
     if (body.role && VALID_ROLES.includes(body.role)) {
       patch.role = body.role;

@@ -47,6 +47,7 @@ async function handleAutoPost(request: NextRequest) {
         return {
           id: doc.id,
           name: String(d.name || "Shinigami User"),
+          username: typeof d.username === "string" ? d.username.trim() : "",
           email: String(d.email || ""),
           avatarUrl: String(d.avatarUrl || ""),
           role: (d.role as AccountDoc["role"]) || "both",
@@ -57,14 +58,17 @@ async function handleAutoPost(request: NextRequest) {
           updatedAt: Number(d.updatedAt ?? 0),
         };
       })
-      .filter((acc) => acc.role === "poster" || acc.role === "both");
+      .filter(
+        (acc) =>
+          acc.role === "poster" || acc.role === "both" || acc.role === "all"
+      );
 
     if (posterAccounts.length === 0) {
       return NextResponse.json(
         {
           ok: false,
           error:
-            "Tidak ada akun aktif dengan role 'poster' atau 'both' di Firestore.",
+            "Tidak ada akun aktif dengan role 'poster', 'both', atau 'all' di Firestore.",
         },
         { status: 400 }
       );

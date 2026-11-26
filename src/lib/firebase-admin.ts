@@ -12,11 +12,12 @@ export const ALL_POST_CATEGORIES = [
 ] as const;
 
 export type PostCategory = (typeof ALL_POST_CATEGORIES)[number];
-export type AccountRole = "poster" | "voter" | "both";
+export type AccountRole = "poster" | "voter" | "commenter" | "both" | "all";
 
 export interface AccountDoc {
   id: string;
   name: string;
+  username: string;
   email: string;
   avatarUrl: string;
   role: AccountRole;
@@ -45,14 +46,17 @@ export interface MangaDoc {
 export interface SettingsDoc {
   isPostEnabled: boolean;
   isLikeEnabled: boolean;
+  isCommentEnabled: boolean;
   posterUsername: string;
   likesPerAccountPerRun: number;
+  commentsPerRun: number;
   koboillmApiKey: string;
   koboillmBaseUrl: string;
   selectedModel: string;
   enabledCategories: PostCategory[];
   lastPostRunAt: number;
   lastLikeRunAt: number;
+  lastCommentRunAt: number;
 }
 
 function normalizePrivateKey(rawKey?: string): string {
@@ -104,15 +108,18 @@ export function getDefaultSettings(): SettingsDoc {
   return {
     isPostEnabled: false,
     isLikeEnabled: false,
+    isCommentEnabled: false,
     posterUsername:
       process.env.TARGET_POSTER_USERNAME?.trim() || DEFAULT_POSTER_USERNAME,
     likesPerAccountPerRun: 7,
+    commentsPerRun: 3,
     koboillmApiKey: process.env.KOBOILLM_API_KEY?.trim() || "",
     koboillmBaseUrl: DEFAULT_KOBOILLM_BASE_URL,
     selectedModel: "gpt-6-luna",
     enabledCategories: [...ALL_POST_CATEGORIES],
     lastPostRunAt: 0,
     lastLikeRunAt: 0,
+    lastCommentRunAt: 0,
   };
 }
 
@@ -141,6 +148,10 @@ export async function getSettingsDoc(): Promise<SettingsDoc> {
       typeof data.isLikeEnabled === "boolean"
         ? data.isLikeEnabled
         : defaults.isLikeEnabled,
+    isCommentEnabled:
+      typeof data.isCommentEnabled === "boolean"
+        ? data.isCommentEnabled
+        : defaults.isCommentEnabled,
     posterUsername:
       typeof data.posterUsername === "string" && data.posterUsername.trim()
         ? data.posterUsername.trim()
@@ -150,6 +161,10 @@ export async function getSettingsDoc(): Promise<SettingsDoc> {
       data.likesPerAccountPerRun > 0
         ? Math.min(20, Math.floor(data.likesPerAccountPerRun))
         : defaults.likesPerAccountPerRun,
+    commentsPerRun:
+      typeof data.commentsPerRun === "number" && data.commentsPerRun > 0
+        ? Math.min(10, Math.floor(data.commentsPerRun))
+        : defaults.commentsPerRun,
     koboillmApiKey:
       typeof data.koboillmApiKey === "string" && data.koboillmApiKey.trim()
         ? data.koboillmApiKey.trim()
@@ -168,5 +183,7 @@ export async function getSettingsDoc(): Promise<SettingsDoc> {
       typeof data.lastPostRunAt === "number" ? data.lastPostRunAt : 0,
     lastLikeRunAt:
       typeof data.lastLikeRunAt === "number" ? data.lastLikeRunAt : 0,
+    lastCommentRunAt:
+      typeof data.lastCommentRunAt === "number" ? data.lastCommentRunAt : 0,
   };
 }

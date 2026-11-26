@@ -61,6 +61,7 @@ async function handleAutoLike(request: NextRequest) {
         return {
           id: doc.id,
           name: String(d.name || "Shinigami User"),
+          username: typeof d.username === "string" ? d.username.trim() : "",
           email: String(d.email || ""),
           avatarUrl: String(d.avatarUrl || ""),
           role: (d.role as AccountDoc["role"]) || "both",
@@ -71,14 +72,17 @@ async function handleAutoLike(request: NextRequest) {
           updatedAt: Number(d.updatedAt ?? 0),
         };
       })
-      .filter((acc) => acc.role === "voter" || acc.role === "both");
+      .filter(
+        (acc) =>
+          acc.role === "voter" || acc.role === "both" || acc.role === "all"
+      );
 
     if (voterAccounts.length === 0) {
       return NextResponse.json(
         {
           ok: false,
           error:
-            "Tidak ada akun aktif dengan role 'voter' atau 'both' di Firestore.",
+            "Tidak ada akun aktif dengan role 'voter', 'both', atau 'all' di Firestore.",
         },
         { status: 400 }
       );

@@ -34,9 +34,9 @@ import {
   Users,
 } from "lucide-react";
 
-type TabKey = "mangas" | "autopost" | "accounts";
+type TabKey = "mangas" | "autopost" | "autocomment" | "accounts";
 type PostCategory = "teori" | "tanya" | "rekomendasi" | "polling";
-type AccountRole = "poster" | "voter" | "both";
+type AccountRole = "poster" | "voter" | "commenter" | "both" | "all";
 
 interface MangaItem {
   mangaId: string;
@@ -56,19 +56,23 @@ interface MangaItem {
 interface SettingsState {
   isPostEnabled: boolean;
   isLikeEnabled: boolean;
+  isCommentEnabled: boolean;
   posterUsername: string;
   likesPerAccountPerRun: number;
+  commentsPerRun: number;
   koboillmApiKey: string;
   koboillmBaseUrl: string;
   selectedModel: string;
   enabledCategories: PostCategory[];
   lastPostRunAt: number;
   lastLikeRunAt: number;
+  lastCommentRunAt: number;
 }
 
 interface SafeAccount {
   id: string;
   name: string;
+  username: string;
   email: string;
   avatarUrl: string;
   role: AccountRole;
@@ -79,6 +83,46 @@ interface SafeAccount {
   refreshTokenPreview: string;
   hasAccessToken: boolean;
   hasRefreshToken: boolean;
+}
+
+interface LatestMangaPreview {
+  manga_id: string;
+  title: string;
+  cover_image_url: string;
+  country_id: string;
+  format: string;
+  isProject: boolean;
+  typeLabel: string;
+  chapters: Array<{
+    chapter_id: string;
+    chapter_number: number;
+    created_at?: string;
+  }>;
+}
+
+interface CommentRunResultItem {
+  mangaId: string;
+  mangaTitle: string;
+  isProject: boolean;
+  chapterId: string;
+  chapterNumber: number;
+  content: string;
+  pageKey: string;
+  commentId?: number;
+}
+
+interface CommentTestResponse {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  totalSent: number;
+  targetCount: number;
+  skippedAlreadyCommented?: number;
+  failedAttempts?: number;
+  accountName?: string;
+  accountUsername?: string;
+  tokenRefreshed?: boolean;
+  results: CommentRunResultItem[];
 }
 
 interface LivePost {
@@ -182,14 +226,17 @@ export default function DashboardPage() {
   const [settings, setSettings] = useState<SettingsState>({
     isPostEnabled: false,
     isLikeEnabled: false,
+    isCommentEnabled: false,
     posterUsername: "mahpudeen",
     likesPerAccountPerRun: 7,
+    commentsPerRun: 3,
     koboillmApiKey: "",
     koboillmBaseUrl: "https://api.koboillm.com/v1",
     selectedModel: "gpt-6-luna",
     enabledCategories: ["teori", "tanya", "rekomendasi", "polling"],
     lastPostRunAt: 0,
     lastLikeRunAt: 0,
+    lastCommentRunAt: 0,
   });
   const [cronSecret, setCronSecret] = useState("");
   const [loadingSettings, setLoadingSettings] = useState(false);
@@ -206,11 +253,18 @@ export default function DashboardPage() {
     payload: Record<string, unknown>;
   } | null>(null);
 
+  // Tab 3: Auto-Comment
+  const [testingComment, setTestingComment] = useState(false);
+  const [commentTestResult, setCommentTestResult] =
+    useState<CommentTestResponse | null>(null);
+  const [latestMangas, setLatestMangas] = useState<LatestMangaPreview[]>([]);
+  const [loadingLatest, setLoadingLatest] = useState(false);
+
   const [livePosts, setLivePosts] = useState<LivePost[]>([]);
   const [liveFeedUser, setLiveFeedUser] = useState("mahpudeen");
   const [loadingFeed, setLoadingFeed] = useState(false);
 
-  // Tab 3: Accounts
+  // Tab 4: Accounts
   const [accounts, setAccounts] = useState<SafeAccount[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [addingAccount, setAddingAccount] = useState(false);
@@ -220,11 +274,15 @@ export default function DashboardPage() {
   const [updatingAccountId, setUpdatingAccountId] = useState<string | null>(
     null
   );
+  const [usernameDrafts, setUsernameDrafts] = useState<Record<string, string>>(
+    {}
+  );
   const [newAccountForm, setNewAccountForm] = useState({
+    username: "",
     refreshToken: "",
     accessToken: "",
     clientId: DEFAULT_CLIENT_ID,
-    role: "both" as AccountRole,
+    role: "all" as AccountRole,
   });
 
   const notify = useCallback((type: "success" | "error", text: string) => {
@@ -313,6 +371,11 @@ export default function DashboardPage() {
         throw new Error(data.error || "Gagal memuat akun.");
       }
       setAccounts(data.accounts || []);
+      const drafts: Record<string, string> = {};
+      for (const acc of (data.accounts || []) as SafeAccount[]) {
+        drafts[acc.id] = acc.username || "";
+      }
+      setUsernameDrafts(drafts);
     } catch (err) {
       notify(
         "error",
@@ -323,17 +386,43 @@ export default function DashboardPage() {
     }
   }, [notify]);
 
+  const loadLatestMangas = useCallback(async () => {
+    setLoadingLatest(true);
+    try {
+      const res = await fetch("/api/mangas/latest?limit=20", {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal memuat manga update terbaru.");
+      }
+      setLatestMangas(data.mangas || []);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error
+          ? err.message
+          : "Gagal memuat daftar manga terbaru."
+      );
+    } finally {
+      setLoadingLatest(false);
+    }
+  }, [notify]);
+
   useEffect(() => {
     let cancelled = false;
 
     async function hydrateInitialData() {
-      const [mangasRes, settingsRes, accountsRes, feedRes] =
+      const [mangasRes, settingsRes, accountsRes, feedRes, latestRes] =
         await Promise.allSettled([
           fetch("/api/mangas", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/settings", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/accounts", { cache: "no-store" }).then((r) => r.json()),
           fetch("/api/posts?limit=20", { cache: "no-store" }).then((r) =>
             r.json()
+          ),
+          fetch("/api/mangas/latest?limit=20", { cache: "no-store" }).then(
+            (r) => r.json()
           ),
         ]);
 
@@ -349,11 +438,20 @@ export default function DashboardPage() {
         setCronSecret(settingsRes.value.cronSecret || "");
       }
       if (accountsRes.status === "fulfilled" && accountsRes.value?.ok) {
-        setAccounts(accountsRes.value.accounts || []);
+        const list = (accountsRes.value.accounts || []) as SafeAccount[];
+        setAccounts(list);
+        const drafts: Record<string, string> = {};
+        for (const acc of list) {
+          drafts[acc.id] = acc.username || "";
+        }
+        setUsernameDrafts(drafts);
       }
       if (feedRes.status === "fulfilled" && feedRes.value?.ok) {
         setLivePosts(feedRes.value.posts || []);
         setLiveFeedUser(feedRes.value.username || "mahpudeen");
+      }
+      if (latestRes.status === "fulfilled" && latestRes.value?.ok) {
+        setLatestMangas(latestRes.value.mangas || []);
       }
     }
 
@@ -557,10 +655,11 @@ export default function DashboardPage() {
         `Akun ${data.account?.name || ""} berhasil diverifikasi via WorkOS dan disimpan.`
       );
       setNewAccountForm({
+        username: "",
         refreshToken: "",
         accessToken: "",
         clientId: DEFAULT_CLIENT_ID,
-        role: "both",
+        role: "all",
       });
       await loadAccounts();
     } catch (err) {
@@ -570,6 +669,72 @@ export default function DashboardPage() {
       );
     } finally {
       setAddingAccount(false);
+    }
+  };
+
+  const handleTestRunComment = async () => {
+    setTestingComment(true);
+    setCommentTestResult(null);
+    try {
+      const res = await fetch("/api/cron/autocomment?manual=true", {
+        method: "GET",
+        cache: "no-store",
+      });
+      const data = (await res.json()) as CommentTestResponse & {
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Test Run Comment gagal.");
+      }
+      setCommentTestResult(data);
+      notify(
+        "success",
+        `Auto-Comment selesai: ${data.totalSent} komentar terkirim via @${data.accountUsername || "-"} (${data.skippedAlreadyCommented ?? 0} chapter dilewati karena sudah dikomentari).`
+      );
+      await Promise.all([loadSettings(), loadLatestMangas()]);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Test Run Comment gagal."
+      );
+    } finally {
+      setTestingComment(false);
+    }
+  };
+
+  const handleSaveAccountUsername = async (account: SafeAccount) => {
+    const nextUsername = (usernameDrafts[account.id] ?? "").trim();
+    setUpdatingAccountId(account.id);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: account.id, username: nextUsername }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal menyimpan username akun.");
+      }
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === account.id ? data.account : a))
+      );
+      setUsernameDrafts((prev) => ({
+        ...prev,
+        [account.id]: data.account?.username || "",
+      }));
+      notify(
+        "success",
+        `Username akun ${account.name} disimpan sebagai ${
+          data.account?.username ? `@${data.account.username}` : "(kosong)"
+        }.`
+      );
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal menyimpan username akun."
+      );
+    } finally {
+      setUpdatingAccountId(null);
     }
   };
 
@@ -708,6 +873,7 @@ export default function DashboardPage() {
     : "?secret=ISI_CRON_SECRET_ANDA";
   const cronPostUrl = `${origin || "https://domain-anda.vercel.app"}/api/cron/autopost${secretQuery}`;
   const cronLikeUrl = `${origin || "https://domain-anda.vercel.app"}/api/cron/autolike${secretQuery}`;
+  const cronCommentUrl = `${origin || "https://domain-anda.vercel.app"}/api/cron/autocomment${secretQuery}`;
 
   const modelChoices = useMemo(() => {
     const set = new Set<string>(models);
@@ -777,6 +943,20 @@ export default function DashboardPage() {
               />
               Auto-Like: {settings.isLikeEnabled ? "ON" : "OFF"}
             </span>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium ring-1 ${
+                settings.isCommentEnabled
+                  ? "bg-cyan-500/10 text-cyan-300 ring-cyan-500/30"
+                  : "bg-slate-800 text-slate-400 ring-slate-700"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  settings.isCommentEnabled ? "bg-cyan-400" : "bg-slate-500"
+                }`}
+              />
+              Auto-Comment: {settings.isCommentEnabled ? "ON" : "OFF"}
+            </span>
             <button
               type="button"
               onClick={handleLogout}
@@ -824,6 +1004,19 @@ export default function DashboardPage() {
             >
               <Bot className="h-4 w-4" />
               Auto-Post
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("autocomment")}
+              className={`inline-flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+                activeTab === "autocomment"
+                  ? "border-indigo-500 text-white"
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              }`}
+            >
+              <MessageSquare className="h-4 w-4" />
+              Auto-Comment
             </button>
 
             <button
@@ -1552,7 +1745,336 @@ export default function DashboardPage() {
           </section>
         )}
 
-        {/* ==================== TAB 3: AKUN ==================== */}
+        {/* ==================== TAB 3: AUTO-COMMENT ==================== */}
+        {activeTab === "autocomment" && (
+          <section className="space-y-6">
+            {/* Saklar ON/OFF + Konfigurasi + URL Cronjob */}
+            <div className="grid gap-6 lg:grid-cols-5">
+              <div className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 lg:col-span-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <MessageSquare className="h-4 w-4 text-cyan-400" />
+                      <h2 className="text-sm font-semibold text-white">
+                        Cron Auto-Comment Chapter Terbaru (Template-Based)
+                      </h2>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Tanpa KoboiLLM & tanpa Auto-Like. Otomatis mengirim
+                      komentar ke chapter terbaru yang belum dikomentari oleh
+                      akun commenter (template apresiasi admin untuk{" "}
+                      <span className="text-emerald-300 font-medium">
+                        Project
+                      </span>{" "}
+                      dan komentar santai untuk{" "}
+                      <span className="text-slate-300 font-medium">Mirror</span>
+                      ).
+                    </p>
+                    <p className="flex items-center gap-1.5 pt-1 text-[11px] text-slate-400">
+                      <Clock className="h-3.5 w-3.5" />
+                      Terakhir jalan: {formatDateTime(settings.lastCommentRunAt)}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.isCommentEnabled}
+                    disabled={savingSettings || loadingSettings}
+                    onClick={() =>
+                      void handleSaveSettings({
+                        isCommentEnabled: !settings.isCommentEnabled,
+                      })
+                    }
+                    className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.isCommentEnabled ? "bg-cyan-500" : "bg-slate-700"
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow transition ${
+                        settings.isCommentEnabled
+                          ? "translate-x-5"
+                          : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="grid gap-4 border-t border-slate-800/80 pt-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                      Jumlah Chapter per Cron Run (1–10)
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={settings.commentsPerRun}
+                        onChange={(e) =>
+                          setSettings((p) => ({
+                            ...p,
+                            commentsPerRun: Math.max(
+                              1,
+                              Math.min(10, Number(e.target.value) || 3)
+                            ),
+                          }))
+                        }
+                        className="w-28 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-cyan-500 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleSaveSettings({
+                            commentsPerRun: settings.commentsPerRun,
+                          })
+                        }
+                        disabled={savingSettings}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
+                      >
+                        {savingSettings ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Save className="h-3.5 w-3.5" />
+                        )}
+                        Simpan
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-400">
+                    <div className="font-medium text-slate-200">
+                      Akun Commenter Aktif
+                    </div>
+                    <p className="mt-1 text-[11px]">
+                      {
+                        accounts.filter(
+                          (a) =>
+                            a.isActive &&
+                            Boolean(a.username) &&
+                            (a.role === "commenter" ||
+                              a.role === "both" ||
+                              a.role === "all")
+                        ).length
+                      }{" "}
+                      akun siap jalan (punya{" "}
+                      <code className="text-slate-200">username</code> & role{" "}
+                      <code className="text-slate-200">
+                        commenter / both / all
+                      </code>
+                      ). Atur username di tab <strong>Akun</strong>.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Output Test Run Comment */}
+                {commentTestResult && (
+                  <div className="space-y-2.5 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-cyan-300">
+                        Hasil Test Run Auto-Comment ({commentTestResult.totalSent}
+                        /{commentTestResult.targetCount} terkirim)
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        Akun: @{commentTestResult.accountUsername || "-"} • Skip
+                        duplikat:{" "}
+                        {commentTestResult.skippedAlreadyCommented ?? 0}
+                      </span>
+                    </div>
+
+                    {commentTestResult.results.length === 0 ? (
+                      <p className="text-xs text-slate-400">
+                        Semua chapter terbaru sudah dikomentari oleh akun ini.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {commentTestResult.results.map((item, idx) => (
+                          <div
+                            key={`${item.chapterId}-${idx}`}
+                            className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-white">
+                                {item.mangaTitle}
+                              </span>
+                              <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-slate-300">
+                                Ch. {item.chapterNumber}
+                              </span>
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                                  item.isProject
+                                    ? "bg-emerald-500/15 text-emerald-300"
+                                    : "bg-slate-800 text-slate-400"
+                                }`}
+                              >
+                                {item.isProject ? "Project" : "Mirror"}
+                              </span>
+                            </div>
+                            <p className="mt-1.5 text-slate-300">
+                              &ldquo;{item.content}&rdquo;
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* URL Cronjob & Tombol Test Run */}
+              <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 lg:col-span-2 h-fit">
+                <h3 className="text-sm font-semibold text-white">
+                  Endpoint Cronjob Auto-Comment
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Jadwalkan di <span className="text-slate-200">Cron-job.org</span>{" "}
+                  setiap <strong>15–30 menit</strong>. Jeda acak 1.5–2.5 detik
+                  diterapkan antar komentar.
+                </p>
+
+                <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/80 p-3.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-cyan-300">
+                      Auto-Comment ({settings.commentsPerRun} Chapter/Run)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleCopyUrl("comment", cronCommentUrl)
+                      }
+                      className="inline-flex items-center gap-1 text-slate-300 hover:text-white"
+                    >
+                      {copiedKey === "comment" ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                      Salin
+                    </button>
+                  </div>
+                  <code className="block break-all rounded-lg bg-slate-900 p-2 font-mono text-[11px] text-slate-300">
+                    {cronCommentUrl}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleTestRunComment}
+                    disabled={testingComment}
+                    className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-600/90 px-3 py-2.5 text-xs font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50"
+                  >
+                    {testingComment ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    {testingComment
+                      ? `Mengirim ${settings.commentsPerRun} Komentar...`
+                      : `Test Run Comment (${settings.commentsPerRun} Chapter)`}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Preview Daftar Manga Update Terbaru */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">
+                    Preview Manga Update Terbaru (Live API Shinigami)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Ditarik langsung dari{" "}
+                    <code className="text-slate-300">
+                      GET /v1/manga/list?sort=latest&amp;is_update=true
+                    </code>{" "}
+                    (tanpa disimpan ke Firestore).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadLatestMangas()}
+                  disabled={loadingLatest}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${
+                      loadingLatest ? "animate-spin" : ""
+                    }`}
+                  />
+                  Refresh Terbaru
+                </button>
+              </div>
+
+              {loadingLatest && latestMangas.length === 0 ? (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-cyan-400" />
+                  Mengambil daftar update terbaru dari Shinigami...
+                </div>
+              ) : latestMangas.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-400">
+                  Belum ada data manga terbaru.
+                </div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {latestMangas.map((m) => (
+                    <div
+                      key={m.manga_id}
+                      className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3.5"
+                    >
+                      {m.cover_image_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={m.cover_image_url}
+                          alt={m.title}
+                          loading="lazy"
+                          className="h-14 w-10 shrink-0 rounded-md border border-slate-700 object-cover bg-slate-800"
+                        />
+                      ) : (
+                        <div className="flex h-14 w-10 shrink-0 items-center justify-center rounded-md bg-slate-800 text-xs text-slate-500">
+                          ?
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h4 className="truncate text-sm font-semibold text-white max-w-[230px] sm:max-w-xs">
+                            {m.title}
+                          </h4>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                              m.isProject
+                                ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+                                : "bg-slate-800 text-slate-400 ring-1 ring-slate-700"
+                            }`}
+                          >
+                            {m.isProject ? "Project" : m.typeLabel || "Mirror"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-400">
+                          {m.chapters.length} chapter terbaru
+                          {m.format ? ` • ${m.format}` : ""}
+                          {m.country_id ? ` • ${m.country_id}` : ""}
+                        </p>
+                        {m.chapters.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {m.chapters.slice(0, 4).map((ch) => (
+                              <span
+                                key={ch.chapter_id}
+                                className="rounded bg-slate-900 px-2 py-0.5 font-mono text-[11px] text-slate-300 ring-1 ring-slate-800"
+                              >
+                                Ch. {ch.chapter_number}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ==================== TAB 4: AKUN ==================== */}
         {activeTab === "accounts" && (
           <section className="grid gap-6 lg:grid-cols-5">
             {/* Form Tambah Akun */}
@@ -1572,6 +2094,24 @@ export default function DashboardPage() {
                 dari WorkOS serta token langsung dirotasi & disimpan ke
                 Firestore.
               </p>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                  Username Shinigami (untuk Anti-Duplikat Auto-Comment)
+                </label>
+                <input
+                  type="text"
+                  value={newAccountForm.username}
+                  onChange={(e) =>
+                    setNewAccountForm((p) => ({
+                      ...p,
+                      username: e.target.value,
+                    }))
+                  }
+                  placeholder="contoh: mahpudeen"
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
 
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-slate-300">
@@ -1625,9 +2165,11 @@ export default function DashboardPage() {
                     }
                     className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
                   >
-                    <option value="both">Both (Poster + Voter)</option>
+                    <option value="all">All (Post + Like + Comment)</option>
+                    <option value="both">Both (Post + Like + Comment)</option>
                     <option value="poster">Poster saja</option>
                     <option value="voter">Voter saja (Auto-Like)</option>
+                    <option value="commenter">Commenter saja (Auto-Comment)</option>
                   </select>
                 </div>
 
@@ -1760,9 +2302,11 @@ export default function DashboardPage() {
                             }
                             className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
                           >
+                            <option value="all">all</option>
                             <option value="both">both</option>
                             <option value="poster">poster</option>
                             <option value="voter">voter</option>
+                            <option value="commenter">commenter</option>
                           </select>
 
                           <button
@@ -1800,6 +2344,40 @@ export default function DashboardPage() {
                             className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Inline Edit Username Shinigami */}
+                      <div className="mt-3 flex flex-col gap-2 border-t border-slate-800/70 pt-3 sm:flex-row sm:items-center">
+                        <label className="text-[11px] font-medium text-slate-400 whitespace-nowrap">
+                          Username Shinigami:
+                        </label>
+                        <div className="flex flex-1 items-center gap-2">
+                          <input
+                            type="text"
+                            value={usernameDrafts[acc.id] ?? acc.username ?? ""}
+                            onChange={(e) =>
+                              setUsernameDrafts((prev) => ({
+                                ...prev,
+                                [acc.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="contoh: mahpudeen"
+                            className="w-full max-w-xs rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={
+                              updatingAccountId === acc.id ||
+                              (usernameDrafts[acc.id] ?? acc.username ?? "").trim() ===
+                                (acc.username || "")
+                            }
+                            onClick={() => void handleSaveAccountUsername(acc)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-xs font-medium text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-40"
+                          >
+                            <Save className="h-3 w-3" />
+                            Simpan Username
                           </button>
                         </div>
                       </div>

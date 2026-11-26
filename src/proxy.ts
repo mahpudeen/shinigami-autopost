@@ -9,7 +9,8 @@ export function proxy(request: NextRequest) {
     pathname.startsWith("/api/auth/login") ||
     pathname.startsWith("/api/auth/logout") ||
     pathname.startsWith("/api/cron/autopost") ||
-    pathname.startsWith("/api/cron/autolike")
+    pathname.startsWith("/api/cron/autolike") ||
+    pathname.startsWith("/api/cron/autocomment")
   ) {
     return NextResponse.next();
   }

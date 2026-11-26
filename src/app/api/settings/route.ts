@@ -44,6 +44,15 @@ export async function POST(request: NextRequest) {
         ? Math.min(20, Math.floor(likesPerRunRaw))
         : current.likesPerAccountPerRun;
 
+    const commentsPerRunRaw =
+      typeof body.commentsPerRun === "number"
+        ? body.commentsPerRun
+        : Number(body.commentsPerRun ?? current.commentsPerRun);
+    const commentsPerRun =
+      Number.isFinite(commentsPerRunRaw) && commentsPerRunRaw >= 1
+        ? Math.min(10, Math.floor(commentsPerRunRaw))
+        : current.commentsPerRun;
+
     const updated: Partial<SettingsDoc> = {
       isPostEnabled:
         typeof body.isPostEnabled === "boolean"
@@ -53,11 +62,16 @@ export async function POST(request: NextRequest) {
         typeof body.isLikeEnabled === "boolean"
           ? body.isLikeEnabled
           : current.isLikeEnabled,
+      isCommentEnabled:
+        typeof body.isCommentEnabled === "boolean"
+          ? body.isCommentEnabled
+          : current.isCommentEnabled,
       posterUsername:
         typeof body.posterUsername === "string" && body.posterUsername.trim()
           ? body.posterUsername.trim()
           : current.posterUsername || DEFAULT_POSTER_USERNAME,
       likesPerAccountPerRun,
+      commentsPerRun,
       koboillmApiKey:
         typeof body.koboillmApiKey === "string"
           ? body.koboillmApiKey.trim()
