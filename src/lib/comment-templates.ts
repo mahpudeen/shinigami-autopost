@@ -36,6 +36,7 @@ export const PROJECT_TEMPLATES: readonly string[] = [
   "Terima kasih tim TL atas garapan ch {chapter}-nya, semoga makin jaya terus!",
   "Enak banget baca terjemahan project ini, makasih banyak min dan tim TL 🙌",
   "Makasih banyak min udah nyempetin update ch {chapter}, semangat terus ya 🔥",
+  "Makasih min sudah update chapter {chapter}, ditunggu kelanjutannya!",
 ];
 
 export const GENERAL_TEMPLATES: readonly string[] = [
@@ -69,6 +70,7 @@ export const GENERAL_TEMPLATES: readonly string[] = [
   "Jejak dulu sebelum lupa, seru banget ch {chapter}!",
   "Sikat terus, ch {chapter} pecah abis!",
   "Oke banget chapter {chapter}-nya, lanjut gas!",
+  "Lanjut terus chapter {chapter}, semangat baca terus!",
 ];
 
 export function isProjectManga(manga: CommentTemplateManga): boolean {
