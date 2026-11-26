@@ -1,68 +1,1793 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  AlertCircle,
+  BookOpen,
+  Bot,
+  Check,
+  CheckCircle2,
+  Clock,
+  Copy,
+  Eye,
+  EyeOff,
+  Heart,
+  KeyRound,
+  Loader2,
+  MessageSquare,
+  Play,
+  Plus,
+  RefreshCw,
+  Save,
+  Search,
+  Sparkles,
+  ThumbsUp,
+  Trash2,
+  Users,
+} from "lucide-react";
+
+type TabKey = "mangas" | "autopost" | "accounts";
+type PostCategory = "teori" | "tanya" | "rekomendasi" | "polling";
+type AccountRole = "poster" | "voter" | "both";
+
+interface MangaItem {
+  mangaId: string;
+  title: string;
+  coverImageUrl: string;
+  countryId: string;
+  viewCount: number;
+  userRate: number;
+  latestChapterNumber: number;
+  genres: string[];
+  format: string;
+  popularityRank: number;
+  postCount: number;
+  lastPostedAt: number;
+}
+
+interface SettingsState {
+  isPostEnabled: boolean;
+  isLikeEnabled: boolean;
+  posterUsername: string;
+  likesPerAccountPerRun: number;
+  koboillmApiKey: string;
+  koboillmBaseUrl: string;
+  selectedModel: string;
+  enabledCategories: PostCategory[];
+  lastPostRunAt: number;
+  lastLikeRunAt: number;
+}
+
+interface SafeAccount {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl: string;
+  role: AccountRole;
+  isActive: boolean;
+  clientId: string;
+  updatedAt: number;
+  accessTokenPreview: string;
+  refreshTokenPreview: string;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+}
+
+interface LivePost {
+  id: string;
+  title: string;
+  content: string;
+  manga_title?: string;
+  is_spoiler?: boolean;
+  like_count?: number;
+  comment_count?: number;
+  created_at?: string;
+  poll?: {
+    options?: Array<{
+      id?: string;
+      text?: string;
+      option?: string;
+      vote_count?: number;
+      votes_count?: number;
+    }>;
+  } | null;
+}
+
+interface ToastMessage {
+  type: "success" | "error";
+  text: string;
+}
+
+const DEFAULT_CLIENT_ID = "client_01KJWQWJ8M8WAKN8ZDWVVJ4BG1";
+
+const CATEGORY_OPTIONS: Array<{
+  key: PostCategory;
+  label: string;
+  desc: string;
+}> = [
+  {
+    key: "teori",
+    label: "Teori",
+    desc: "Misteri alur, kekuatan karakter & prediksi chapter",
+  },
+  {
+    key: "tanya",
+    label: "Tanya",
+    desc: "Pertanyaan diskusi terbuka untuk pembaca lain",
+  },
+  {
+    key: "rekomendasi",
+    label: "Rekomendasi",
+    desc: "Ulasan daya tarik komik untuk mengajak baca",
+  },
+  {
+    key: "polling",
+    label: "Polling",
+    desc: "Debat seru disertai 3–4 opsi voting",
+  },
+];
+
+function formatDateTime(ts?: number | string | null): string {
+  if (!ts) return "Belum pernah";
+  const date = typeof ts === "number" ? new Date(ts) : new Date(ts);
+  if (Number.isNaN(date.getTime())) return "Belum pernah";
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatNumber(n: number): string {
+  if (!n) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+const emptySubscribe = () => () => {};
+
+function useClientOrigin(): string {
+  return useSyncExternalStore(
+    emptySubscribe,
+    () => window.location.origin,
+    () => ""
+  );
+}
+
+export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<TabKey>("mangas");
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const origin = useClientOrigin();
+
+  // Tab 1: Mangas
+  const [mangas, setMangas] = useState<MangaItem[]>([]);
+  const [loadingMangas, setLoadingMangas] = useState(false);
+  const [syncingMangas, setSyncingMangas] = useState(false);
+  const [mangaSearch, setMangaSearch] = useState("");
+
+  // Tab 2: Settings + KoboiLLM + Cron + Live Feed
+  const [settings, setSettings] = useState<SettingsState>({
+    isPostEnabled: false,
+    isLikeEnabled: false,
+    posterUsername: "mahpudeen",
+    likesPerAccountPerRun: 7,
+    koboillmApiKey: "",
+    koboillmBaseUrl: "https://api.koboillm.com/v1",
+    selectedModel: "gpt-6-luna",
+    enabledCategories: ["teori", "tanya", "rekomendasi", "polling"],
+    lastPostRunAt: 0,
+    lastLikeRunAt: 0,
+  });
+  const [cronSecret, setCronSecret] = useState("");
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const [testingPost, setTestingPost] = useState(false);
+  const [testingLike, setTestingLike] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    kind: "post" | "like";
+    payload: Record<string, unknown>;
+  } | null>(null);
+
+  const [livePosts, setLivePosts] = useState<LivePost[]>([]);
+  const [liveFeedUser, setLiveFeedUser] = useState("mahpudeen");
+  const [loadingFeed, setLoadingFeed] = useState(false);
+
+  // Tab 3: Accounts
+  const [accounts, setAccounts] = useState<SafeAccount[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(
+    null
+  );
+  const [updatingAccountId, setUpdatingAccountId] = useState<string | null>(
+    null
+  );
+  const [newAccountForm, setNewAccountForm] = useState({
+    refreshToken: "",
+    accessToken: "",
+    clientId: DEFAULT_CLIENT_ID,
+    role: "both" as AccountRole,
+  });
+
+  const notify = useCallback((type: "success" | "error", text: string) => {
+    setToast({ type, text });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const loadMangas = useCallback(async () => {
+    setLoadingMangas(true);
+    try {
+      const res = await fetch("/api/mangas", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal memuat manga.");
+      }
+      setMangas(data.mangas || []);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal memuat daftar manga."
+      );
+    } finally {
+      setLoadingMangas(false);
+    }
+  }, [notify]);
+
+  const loadSettings = useCallback(async () => {
+    setLoadingSettings(true);
+    try {
+      const res = await fetch("/api/settings", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal memuat pengaturan.");
+      }
+      if (data.settings) {
+        setSettings(data.settings);
+      }
+      setCronSecret(data.cronSecret || "");
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal memuat pengaturan."
+      );
+    } finally {
+      setLoadingSettings(false);
+    }
+  }, [notify]);
+
+  const loadLiveFeed = useCallback(
+    async (usernameOverride?: string) => {
+      setLoadingFeed(true);
+      try {
+        const qs = usernameOverride
+          ? `?username=${encodeURIComponent(usernameOverride)}&limit=20`
+          : "?limit=20";
+        const res = await fetch(`/api/posts${qs}`, { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || "Gagal memuat live feed post.");
+        }
+        setLivePosts(data.posts || []);
+        setLiveFeedUser(data.username || "mahpudeen");
+      } catch (err) {
+        notify(
+          "error",
+          err instanceof Error ? err.message : "Gagal memuat live feed post."
+        );
+      } finally {
+        setLoadingFeed(false);
+      }
+    },
+    [notify]
+  );
+
+  const loadAccounts = useCallback(async () => {
+    setLoadingAccounts(true);
+    try {
+      const res = await fetch("/api/accounts", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal memuat akun.");
+      }
+      setAccounts(data.accounts || []);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal memuat daftar akun."
+      );
+    } finally {
+      setLoadingAccounts(false);
+    }
+  }, [notify]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateInitialData() {
+      const [mangasRes, settingsRes, accountsRes, feedRes] =
+        await Promise.allSettled([
+          fetch("/api/mangas", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/settings", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/accounts", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/posts?limit=20", { cache: "no-store" }).then((r) =>
+            r.json()
+          ),
+        ]);
+
+      if (cancelled) return;
+
+      if (mangasRes.status === "fulfilled" && mangasRes.value?.ok) {
+        setMangas(mangasRes.value.mangas || []);
+      }
+      if (settingsRes.status === "fulfilled" && settingsRes.value?.ok) {
+        if (settingsRes.value.settings) {
+          setSettings(settingsRes.value.settings);
+        }
+        setCronSecret(settingsRes.value.cronSecret || "");
+      }
+      if (accountsRes.status === "fulfilled" && accountsRes.value?.ok) {
+        setAccounts(accountsRes.value.accounts || []);
+      }
+      if (feedRes.status === "fulfilled" && feedRes.value?.ok) {
+        setLivePosts(feedRes.value.posts || []);
+        setLiveFeedUser(feedRes.value.username || "mahpudeen");
+      }
+    }
+
+    void hydrateInitialData();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSyncTop300 = async () => {
+    setSyncingMangas(true);
+    try {
+      const res = await fetch("/api/mangas", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal sinkronisasi Top 300 manga.");
+      }
+      notify(
+        "success",
+        `Berhasil sync ${data.syncedCount} manga terpopuler (${data.pagesFetched} halaman, ${data.deletedCount} data lama dibersihkan).`
+      );
+      await loadMangas();
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Sinkronisasi manga gagal."
+      );
+    } finally {
+      setSyncingMangas(false);
+    }
+  };
+
+  const handleSaveSettings = async (override?: Partial<SettingsState>) => {
+    const nextSettings = override ? { ...settings, ...override } : settings;
+    if (override) {
+      setSettings(nextSettings);
+    }
+    setSavingSettings(true);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(nextSettings),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal menyimpan pengaturan.");
+      }
+      setSettings(data.settings);
+      notify("success", "Pengaturan Auto-Post & Auto-Like berhasil disimpan.");
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal menyimpan pengaturan."
+      );
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleFetchModels = async () => {
+    setLoadingModels(true);
+    try {
+      const res = await fetch("/api/koboillm/models", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiKey: settings.koboillmApiKey,
+          baseUrl: settings.koboillmBaseUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal memuat model KoboiLLM.");
+      }
+      const list: string[] = data.models || [];
+      setModels(list);
+      if (list.length > 0 && !list.includes(settings.selectedModel)) {
+        setSettings((prev) => ({ ...prev, selectedModel: list[0] }));
+      }
+      notify("success", `Berhasil memuat ${list.length} model dari KoboiLLM.`);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal memuat daftar model."
+      );
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  const toggleCategory = (cat: PostCategory) => {
+    setSettings((prev) => {
+      const exists = prev.enabledCategories.includes(cat);
+      if (exists && prev.enabledCategories.length === 1) {
+        notify("error", "Minimal harus ada 1 kategori post yang aktif.");
+        return prev;
+      }
+      return {
+        ...prev,
+        enabledCategories: exists
+          ? prev.enabledCategories.filter((c) => c !== cat)
+          : [...prev.enabledCategories, cat],
+      };
+    });
+  };
+
+  const handleCopyUrl = async (key: string, url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedKey(key);
+      notify("success", "URL Cronjob disalin ke clipboard.");
+      setTimeout(() => setCopiedKey(null), 2000);
+    } catch {
+      notify("error", "Gagal menyalin URL ke clipboard.");
+    }
+  };
+
+  const handleTestRunPost = async () => {
+    setTestingPost(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/cron/autopost?manual=true", {
+        method: "GET",
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Test Run Post gagal.");
+      }
+      setTestResult({ kind: "post", payload: data });
+      notify(
+        "success",
+        `Berhasil membuat post untuk "${data.manga?.title || "Manga"}" (${data.category}).`
+      );
+      await Promise.all([
+        loadMangas(),
+        loadSettings(),
+        loadLiveFeed(settings.posterUsername),
+      ]);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Test Run Post gagal."
+      );
+    } finally {
+      setTestingPost(false);
+    }
+  };
+
+  const handleTestRunLike = async () => {
+    setTestingLike(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/cron/autolike?manual=true", {
+        method: "GET",
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Test Run Like gagal.");
+      }
+      setTestResult({ kind: "like", payload: data });
+      notify(
+        "success",
+        `Auto-Like selesai: total ${data.totalLikesGiven ?? 0} like diberikan dari ${data.totalVoters ?? 0} akun voter.`
+      );
+      await Promise.all([
+        loadSettings(),
+        loadLiveFeed(settings.posterUsername),
+      ]);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Test Run Like gagal."
+      );
+    } finally {
+      setTestingLike(false);
+    }
+  };
+
+  const handleAddAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAccountForm.refreshToken.trim()) {
+      notify("error", "refresh_token wajib diisi.");
+      return;
+    }
+    setAddingAccount(true);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(newAccountForm),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal menambahkan akun.");
+      }
+      notify(
+        "success",
+        `Akun ${data.account?.name || ""} berhasil diverifikasi via WorkOS dan disimpan.`
+      );
+      setNewAccountForm({
+        refreshToken: "",
+        accessToken: "",
+        clientId: DEFAULT_CLIENT_ID,
+        role: "both",
+      });
+      await loadAccounts();
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal menambahkan akun."
+      );
+    } finally {
+      setAddingAccount(false);
+    }
+  };
+
+  const handleRefreshAccount = async (id: string) => {
+    setRefreshingAccountId(id);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, action: "refresh" }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal refresh token WorkOS.");
+      }
+      notify("success", data.message || "Token WorkOS berhasil di-refresh.");
+      await loadAccounts();
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Refresh token gagal."
+      );
+    } finally {
+      setRefreshingAccountId(null);
+    }
+  };
+
+  const handleToggleAccountActive = async (account: SafeAccount) => {
+    setUpdatingAccountId(account.id);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: account.id, isActive: !account.isActive }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal mengubah status akun.");
+      }
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === account.id ? data.account : a))
+      );
+      notify(
+        "success",
+        `Akun ${account.name} ${!account.isActive ? "diaktifkan" : "dinonaktifkan"}.`
+      );
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal mengubah status akun."
+      );
+    } finally {
+      setUpdatingAccountId(null);
+    }
+  };
+
+  const handleChangeAccountRole = async (
+    account: SafeAccount,
+    role: AccountRole
+  ) => {
+    setUpdatingAccountId(account.id);
+    try {
+      const res = await fetch("/api/accounts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: account.id, role }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal mengubah role akun.");
+      }
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === account.id ? data.account : a))
+      );
+      notify("success", `Role akun ${account.name} diubah menjadi ${role}.`);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal mengubah role akun."
+      );
+    } finally {
+      setUpdatingAccountId(null);
+    }
+  };
+
+  const handleDeleteAccount = async (account: SafeAccount) => {
+    if (!window.confirm(`Hapus akun "${account.name}" dari Firestore?`)) {
+      return;
+    }
+    setUpdatingAccountId(account.id);
+    try {
+      const res = await fetch(
+        `/api/accounts?id=${encodeURIComponent(account.id)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal menghapus akun.");
+      }
+      setAccounts((prev) => prev.filter((a) => a.id !== account.id));
+      notify("success", `Akun ${account.name} berhasil dihapus.`);
+    } catch (err) {
+      notify(
+        "error",
+        err instanceof Error ? err.message : "Gagal menghapus akun."
+      );
+    } finally {
+      setUpdatingAccountId(null);
+    }
+  };
+
+  const filteredMangas = useMemo(() => {
+    const q = mangaSearch.trim().toLowerCase();
+    if (!q) return mangas;
+    return mangas.filter(
+      (m) =>
+        m.title.toLowerCase().includes(q) ||
+        m.countryId.toLowerCase().includes(q) ||
+        m.format.toLowerCase().includes(q) ||
+        m.genres.some((g) => g.toLowerCase().includes(q)) ||
+        String(m.popularityRank) === q
+    );
+  }, [mangas, mangaSearch]);
+
+  const mangaStats = useMemo(() => {
+    const posted = mangas.filter((m) => m.lastPostedAt > 0).length;
+    return {
+      total: mangas.length,
+      posted,
+      unposted: mangas.length - posted,
+    };
+  }, [mangas]);
+
+  const secretQuery = cronSecret
+    ? `?secret=${encodeURIComponent(cronSecret)}`
+    : "?secret=ISI_CRON_SECRET_ANDA";
+  const cronPostUrl = `${origin || "https://domain-anda.vercel.app"}/api/cron/autopost${secretQuery}`;
+  const cronLikeUrl = `${origin || "https://domain-anda.vercel.app"}/api/cron/autolike${secretQuery}`;
+
+  const modelChoices = useMemo(() => {
+    const set = new Set<string>(models);
+    if (settings.selectedModel) {
+      set.add(settings.selectedModel);
+    }
+    return Array.from(set);
+  }, [models, settings.selectedModel]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      {/* Header */}
+      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600/20 text-indigo-400 ring-1 ring-indigo-500/30">
+              <Sparkles className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight text-white">
+                Shinigami Auto-Post & Auto-Like
+              </h1>
+              <p className="text-xs text-slate-400">
+                Serverless Dashboard • Firestore Spark Plan + KoboiLLM
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium ring-1 ${
+                settings.isPostEnabled
+                  ? "bg-emerald-500/10 text-emerald-300 ring-emerald-500/30"
+                  : "bg-slate-800 text-slate-400 ring-slate-700"
+              }`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  settings.isPostEnabled ? "bg-emerald-400" : "bg-slate-500"
+                }`}
+              />
+              Auto-Post: {settings.isPostEnabled ? "ON" : "OFF"}
+            </span>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium ring-1 ${
+                settings.isLikeEnabled
+                  ? "bg-pink-500/10 text-pink-300 ring-pink-500/30"
+                  : "bg-slate-800 text-slate-400 ring-slate-700"
+              }`}
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  settings.isLikeEnabled ? "bg-pink-400" : "bg-slate-500"
+                }`}
+              />
+              Auto-Like: {settings.isLikeEnabled ? "ON" : "OFF"}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        {/* 3-Tab Navigation */}
+        <div className="mx-auto max-w-7xl px-4 sm:px-6">
+          <nav className="flex gap-1 overflow-x-auto" aria-label="Menu Utama">
+            <button
+              type="button"
+              onClick={() => setActiveTab("mangas")}
+              className={`inline-flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+                activeTab === "mangas"
+                  ? "border-indigo-500 text-white"
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              }`}
+            >
+              <BookOpen className="h-4 w-4" />
+              List Manga
+              <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
+                {mangas.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("autopost")}
+              className={`inline-flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+                activeTab === "autopost"
+                  ? "border-indigo-500 text-white"
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              }`}
+            >
+              <Bot className="h-4 w-4" />
+              Auto-Post
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("accounts")}
+              className={`inline-flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+                activeTab === "accounts"
+                  ? "border-indigo-500 text-white"
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              }`}
+            >
+              <Users className="h-4 w-4" />
+              Akun
+              <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
+                {accounts.length}
+              </span>
+            </button>
+          </nav>
         </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+        {/* Toast Notification */}
+        {toast && (
+          <div
+            className={`mb-6 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
+              toast.type === "success"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                : "border-rose-500/30 bg-rose-500/10 text-rose-200"
+            }`}
+          >
+            {toast.type === "success" ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+            ) : (
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+            )}
+            <span className="flex-1">{toast.text}</span>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="text-xs opacity-70 hover:opacity-100"
+            >
+              Tutup
+            </button>
+          </div>
+        )}
+
+        {/* ==================== TAB 1: LIST MANGA ==================== */}
+        {activeTab === "mangas" && (
+          <section className="space-y-6">
+            <div className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-white">
+                  Top 300 Manga Terpopuler Shinigami
+                </h2>
+                <p className="mt-1 text-xs text-slate-400">
+                  Urutan posting menggunakan antrian adil berdasarkan{" "}
+                  <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-200">
+                    lastPostedAt ASC
+                  </code>{" "}
+                  (hanya 1 Firestore Read per cron post).
+                </p>
+                <div className="mt-3 flex flex-wrap gap-3 text-xs text-slate-300">
+                  <span className="rounded-lg bg-slate-800/80 px-2.5 py-1">
+                    Tersimpan: <strong>{mangaStats.total}</strong> / 300
+                  </span>
+                  <span className="rounded-lg bg-emerald-500/10 px-2.5 py-1 text-emerald-300">
+                    Sudah Diposting: <strong>{mangaStats.posted}</strong>
+                  </span>
+                  <span className="rounded-lg bg-amber-500/10 px-2.5 py-1 text-amber-300">
+                    Antrian Berikutnya: <strong>{mangaStats.unposted}</strong>
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadMangas()}
+                  disabled={loadingMangas || syncingMangas}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 ${loadingMangas ? "animate-spin" : ""}`}
+                  />
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSyncTop300}
+                  disabled={syncingMangas}
+                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  {syncingMangas ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  {syncingMangas
+                    ? "Menyinkronkan 300 Manga..."
+                    : "Sync Top 300 Manga Terpopuler"}
+                </button>
+              </div>
+            </div>
+
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={mangaSearch}
+                onChange={(e) => setMangaSearch(e.target.value)}
+                placeholder="Cari judul manga, genre, negara (KR/JP/CN), format, atau rank #..."
+                className="w-full rounded-xl border border-slate-800 bg-slate-900 py-2.5 pr-4 pl-10 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Manga Table */}
+            <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-800 bg-slate-900/90 text-xs tracking-wide text-slate-400 uppercase">
+                    <tr>
+                      <th className="px-4 py-3">Rank</th>
+                      <th className="px-4 py-3">Judul & Genre</th>
+                      <th className="px-4 py-3">Chapter</th>
+                      <th className="px-4 py-3">Views / Rating</th>
+                      <th className="px-4 py-3">Post Count</th>
+                      <th className="px-4 py-3">Terakhir Diposting</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {loadingMangas && mangas.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-12 text-center text-slate-400"
+                        >
+                          <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-indigo-400" />
+                          Memuat daftar manga dari Firestore...
+                        </td>
+                      </tr>
+                    ) : filteredMangas.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-12 text-center text-slate-400"
+                        >
+                          {mangas.length === 0
+                            ? 'Belum ada data manga. Klik tombol "Sync Top 300 Manga Terpopuler" di atas.'
+                            : "Tidak ada manga yang cocok dengan pencarian."}
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredMangas.map((manga) => (
+                        <tr
+                          key={manga.mangaId}
+                          className="transition hover:bg-slate-800/40"
+                        >
+                          <td className="px-4 py-3 font-mono text-xs font-semibold text-indigo-300">
+                            #{manga.popularityRank}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              {manga.coverImageUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={manga.coverImageUrl}
+                                  alt={manga.title}
+                                  loading="lazy"
+                                  className="h-12 w-9 shrink-0 rounded-md border border-slate-700 object-cover bg-slate-800"
+                                />
+                              ) : (
+                                <div className="flex h-12 w-9 shrink-0 items-center justify-center rounded-md bg-slate-800 text-xs text-slate-500">
+                                  ?
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <p className="truncate font-medium text-white max-w-xs sm:max-w-md">
+                                  {manga.title}
+                                </p>
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                                  {manga.countryId && (
+                                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-semibold text-slate-300">
+                                      {manga.countryId}
+                                    </span>
+                                  )}
+                                  {manga.format && (
+                                    <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-indigo-300">
+                                      {manga.format}
+                                    </span>
+                                  )}
+                                  {manga.genres.slice(0, 3).map((g) => (
+                                    <span
+                                      key={g}
+                                      className="rounded bg-slate-800/70 px-1.5 py-0.5"
+                                    >
+                                      {g}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs text-slate-200">
+                            Ch. {manga.latestChapterNumber || "-"}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-300">
+                            <div>{formatNumber(manga.viewCount)} views</div>
+                            <div className="text-amber-300">
+                              ★ {manga.userRate ? manga.userRate.toFixed(1) : "-"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                                manga.postCount > 0
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : "bg-slate-800 text-slate-400"
+                              }`}
+                            >
+                              {manga.postCount}x
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">
+                            {formatDateTime(manga.lastPostedAt)}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ==================== TAB 2: AUTO-POST & AUTO-LIKE ==================== */}
+        {activeTab === "autopost" && (
+          <section className="space-y-6">
+            {/* Saklar ON/OFF Cron */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-indigo-400" />
+                    <h3 className="text-sm font-semibold text-white">
+                      Cron Auto-Post (Tiap 15 Menit)
+                    </h3>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Generate 1 diskusi komik via KoboiLLM & posting otomatis ke
+                    Shinigami.
+                  </p>
+                  <p className="flex items-center gap-1.5 pt-1 text-[11px] text-slate-400">
+                    <Clock className="h-3.5 w-3.5" />
+                    Terakhir jalan: {formatDateTime(settings.lastPostRunAt)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.isPostEnabled}
+                  disabled={savingSettings || loadingSettings}
+                  onClick={() =>
+                    void handleSaveSettings({
+                      isPostEnabled: !settings.isPostEnabled,
+                    })
+                  }
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    settings.isPostEnabled ? "bg-emerald-500" : "bg-slate-700"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow transition ${
+                      settings.isPostEnabled ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Heart className="h-4 w-4 text-pink-400" />
+                    <h3 className="text-sm font-semibold text-white">
+                      Cron Auto-Like (Tiap 2–3 Jam)
+                    </h3>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Acak hingga {settings.likesPerAccountPerRun} post belum
+                    di-like dari{" "}
+                    <span className="font-mono text-slate-200">
+                      @{settings.posterUsername}
+                    </span>{" "}
+                    per akun voter.
+                  </p>
+                  <p className="flex items-center gap-1.5 pt-1 text-[11px] text-slate-400">
+                    <Clock className="h-3.5 w-3.5" />
+                    Terakhir jalan: {formatDateTime(settings.lastLikeRunAt)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.isLikeEnabled}
+                  disabled={savingSettings || loadingSettings}
+                  onClick={() =>
+                    void handleSaveSettings({
+                      isLikeEnabled: !settings.isLikeEnabled,
+                    })
+                  }
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    settings.isLikeEnabled ? "bg-pink-500" : "bg-slate-700"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow transition ${
+                      settings.isLikeEnabled ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Pengaturan KoboiLLM & Kategori */}
+            <div className="grid gap-6 lg:grid-cols-5">
+              <div className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 lg:col-span-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-white">
+                    Konfigurasi KoboiLLM & Kategori Post
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveSettings()}
+                    disabled={savingSettings}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {savingSettings ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Save className="h-3.5 w-3.5" />
+                    )}
+                    Simpan Pengaturan
+                  </button>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                      KoboiLLM Base URL
+                    </label>
+                    <input
+                      type="url"
+                      value={settings.koboillmBaseUrl}
+                      onChange={(e) =>
+                        setSettings((p) => ({
+                          ...p,
+                          koboillmBaseUrl: e.target.value,
+                        }))
+                      }
+                      placeholder="https://api.koboillm.com/v1"
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                      KoboiLLM API Key
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showApiKey ? "text" : "password"}
+                        value={settings.koboillmApiKey}
+                        onChange={(e) =>
+                          setSettings((p) => ({
+                            ...p,
+                            koboillmApiKey: e.target.value,
+                          }))
+                        }
+                        placeholder="sk-xxxxxx"
+                        className="w-full rounded-xl border border-slate-700 bg-slate-950 py-2 pr-9 pl-3 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey((v) => !v)}
+                        className="absolute top-1/2 right-2.5 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                        aria-label="Toggle API Key visibility"
+                      >
+                        {showApiKey ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Model Dropdown + Muat Model */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                    Model KoboiLLM
+                  </label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <select
+                      value={settings.selectedModel}
+                      onChange={(e) =>
+                        setSettings((p) => ({
+                          ...p,
+                          selectedModel: e.target.value,
+                        }))
+                      }
+                      className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    >
+                      {modelChoices.map((modelId) => (
+                        <option key={modelId} value={modelId}>
+                          {modelId}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleFetchModels}
+                      disabled={loadingModels}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      {loadingModels ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      Muat Model
+                    </button>
+                  </div>
+                </div>
+
+                {/* Target Username & Likes Per Account */}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                      Target Poster Username (Auto-Like & Feed)
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.posterUsername}
+                      onChange={(e) =>
+                        setSettings((p) => ({
+                          ...p,
+                          posterUsername: e.target.value,
+                        }))
+                      }
+                      placeholder="mahpudeen"
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                      Maksimal Like / Akun / Run
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={settings.likesPerAccountPerRun}
+                      onChange={(e) =>
+                        setSettings((p) => ({
+                          ...p,
+                          likesPerAccountPerRun: Math.max(
+                            1,
+                            Math.min(20, Number(e.target.value) || 7)
+                          ),
+                        }))
+                      }
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Checkbox Kategori */}
+                <div>
+                  <label className="mb-2 block text-xs font-medium text-slate-300">
+                    Kategori Post Aktif
+                  </label>
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    {CATEGORY_OPTIONS.map((cat) => {
+                      const checked = settings.enabledCategories.includes(
+                        cat.key
+                      );
+                      return (
+                        <label
+                          key={cat.key}
+                          className={`flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition ${
+                            checked
+                              ? "border-indigo-500/50 bg-indigo-500/10"
+                              : "border-slate-800 bg-slate-950/60 hover:border-slate-700"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleCategory(cat.key)}
+                            className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 accent-indigo-500"
+                          />
+                          <div>
+                            <div className="text-xs font-semibold text-white">
+                              {cat.label}
+                            </div>
+                            <div className="text-[11px] text-slate-400">
+                              {cat.desc}
+                            </div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* URL Cronjob & Test Run */}
+              <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 lg:col-span-2">
+                <h3 className="text-sm font-semibold text-white">
+                  Endpoint Cronjob & Test Run
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Salin kedua URL di bawah ke{" "}
+                  <span className="text-slate-200">Cron-job.org</span> atau{" "}
+                  <span className="text-slate-200">Vercel Cron</span>. Test Run
+                  mengabaikan saklar OFF agar bisa diuji langsung.
+                </p>
+
+                {/* Cron 1: Auto-Post */}
+                <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/80 p-3.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-indigo-300">
+                      1. Auto-Post (Tiap 15 Menit)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyUrl("post", cronPostUrl)}
+                      className="inline-flex items-center gap-1 text-slate-300 hover:text-white"
+                    >
+                      {copiedKey === "post" ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                      Salin
+                    </button>
+                  </div>
+                  <code className="block break-all rounded-lg bg-slate-900 p-2 font-mono text-[11px] text-slate-300">
+                    {cronPostUrl}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleTestRunPost}
+                    disabled={testingPost}
+                    className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600/90 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {testingPost ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    {testingPost ? "Menjalankan Auto-Post..." : "Test Run Post"}
+                  </button>
+                </div>
+
+                {/* Cron 2: Auto-Like */}
+                <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/80 p-3.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-pink-300">
+                      2. Auto-Like (Tiap 2–3 Jam)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyUrl("like", cronLikeUrl)}
+                      className="inline-flex items-center gap-1 text-slate-300 hover:text-white"
+                    >
+                      {copiedKey === "like" ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                      Salin
+                    </button>
+                  </div>
+                  <code className="block break-all rounded-lg bg-slate-900 p-2 font-mono text-[11px] text-slate-300">
+                    {cronLikeUrl}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleTestRunLike}
+                    disabled={testingLike}
+                    className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-pink-600/90 px-3 py-2 text-xs font-semibold text-white transition hover:bg-pink-500 disabled:opacity-50"
+                  >
+                    {testingLike ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ThumbsUp className="h-3.5 w-3.5" />
+                    )}
+                    {testingLike ? "Menjalankan Auto-Like..." : "Test Run Like"}
+                  </button>
+                </div>
+
+                {/* Output Test Run */}
+                {testResult && (
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs">
+                    <div className="mb-1.5 font-semibold text-emerald-300">
+                      Hasil Test Run{" "}
+                      {testResult.kind === "post" ? "Auto-Post" : "Auto-Like"}
+                    </div>
+                    <pre className="max-h-48 overflow-auto rounded-lg bg-slate-950/90 p-2.5 font-mono text-[11px] text-slate-300">
+                      {JSON.stringify(testResult.payload, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Live Feed Post Shinigami */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">
+                    Live Feed Post (@{liveFeedUser})
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Ditarik langsung dari{" "}
+                    <code className="text-slate-300">
+                      GET /v1/user/{liveFeedUser}/posts?limit=20
+                    </code>{" "}
+                    tanpa menyimpan log ke Firestore.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadLiveFeed(settings.posterUsername)}
+                  disabled={loadingFeed}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${loadingFeed ? "animate-spin" : ""}`}
+                  />
+                  Refresh Feed
+                </button>
+              </div>
+
+              {loadingFeed && livePosts.length === 0 ? (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-indigo-400" />
+                  Mengambil live feed dari Shinigami...
+                </div>
+              ) : livePosts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-400">
+                  Belum ada postingan ditemukan untuk @{liveFeedUser}.
+                </div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {livePosts.map((post) => (
+                    <article
+                      key={post.id}
+                      className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-4"
+                    >
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                          {post.manga_title && (
+                            <span className="rounded bg-indigo-500/15 px-2 py-0.5 font-medium text-indigo-300">
+                              {post.manga_title}
+                            </span>
+                          )}
+                          {post.is_spoiler && (
+                            <span className="rounded bg-rose-500/15 px-2 py-0.5 font-medium text-rose-300">
+                              Spoiler
+                            </span>
+                          )}
+                          {post.poll?.options && post.poll.options.length > 0 && (
+                            <span className="rounded bg-amber-500/15 px-2 py-0.5 font-medium text-amber-300">
+                              Polling
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="mt-2 text-sm font-semibold text-white">
+                          {post.title || "(Tanpa Judul)"}
+                        </h4>
+                        <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed text-slate-300">
+                          {post.content}
+                        </p>
+
+                        {post.poll?.options && post.poll.options.length > 0 && (
+                          <ul className="mt-3 space-y-1.5">
+                            {post.poll.options.map((opt, idx) => (
+                              <li
+                                key={opt.id || idx}
+                                className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/70 px-2.5 py-1.5 text-[11px] text-slate-300"
+                              >
+                                <span>{opt.text || opt.option || `Opsi ${idx + 1}`}</span>
+                                <span className="font-mono text-slate-400">
+                                  {opt.vote_count ?? opt.votes_count ?? 0} suara
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px] text-slate-400">
+                        <div className="flex items-center gap-3">
+                          <span className="inline-flex items-center gap-1 text-pink-300">
+                            <Heart className="h-3.5 w-3.5" />
+                            {post.like_count ?? 0}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <MessageSquare className="h-3.5 w-3.5" />
+                            {post.comment_count ?? 0}
+                          </span>
+                        </div>
+                        <span>{formatDateTime(post.created_at)}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ==================== TAB 3: AKUN ==================== */}
+        {activeTab === "accounts" && (
+          <section className="grid gap-6 lg:grid-cols-5">
+            {/* Form Tambah Akun */}
+            <form
+              onSubmit={handleAddAccount}
+              className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 lg:col-span-2 h-fit"
+            >
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-indigo-400" />
+                <h2 className="text-sm font-semibold text-white">
+                  Tambah Akun Shinigami (WorkOS)
+                </h2>
+              </div>
+              <p className="text-xs text-slate-400">
+                Masukkan <code className="text-slate-200">refresh_token</code>{" "}
+                dari sesi WorkOS. Nama, email, dan avatar akan otomatis ditarik
+                dari WorkOS serta token langsung dirotasi & disimpan ke
+                Firestore.
+              </p>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                  Refresh Token <span className="text-rose-400">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={newAccountForm.refreshToken}
+                  onChange={(e) =>
+                    setNewAccountForm((p) => ({
+                      ...p,
+                      refreshToken: e.target.value,
+                    }))
+                  }
+                  placeholder="Tempel refresh_token WorkOS..."
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 font-mono text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                  Access Token (Opsional — akan diperbarui otomatis)
+                </label>
+                <textarea
+                  rows={2}
+                  value={newAccountForm.accessToken}
+                  onChange={(e) =>
+                    setNewAccountForm((p) => ({
+                      ...p,
+                      accessToken: e.target.value,
+                    }))
+                  }
+                  placeholder="eyJhbGciOi..."
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 font-mono text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                    Peran (Role)
+                  </label>
+                  <select
+                    value={newAccountForm.role}
+                    onChange={(e) =>
+                      setNewAccountForm((p) => ({
+                        ...p,
+                        role: e.target.value as AccountRole,
+                      }))
+                    }
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="both">Both (Poster + Voter)</option>
+                    <option value="poster">Poster saja</option>
+                    <option value="voter">Voter saja (Auto-Like)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-300">
+                    WorkOS Client ID
+                  </label>
+                  <input
+                    type="text"
+                    value={newAccountForm.clientId}
+                    onChange={(e) =>
+                      setNewAccountForm((p) => ({
+                        ...p,
+                        clientId: e.target.value,
+                      }))
+                    }
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={addingAccount}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {addingAccount ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                {addingAccount
+                  ? "Memverifikasi ke WorkOS..."
+                  : "Tambah Akun & Ekstrak Profil"}
+              </button>
+            </form>
+
+            {/* Daftar Akun */}
+            <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 lg:col-span-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-white">
+                    Daftar Multi-Akun ({accounts.length})
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Token refresh WorkOS bersifat single-use dan otomatis
+                    disimpan ulang tiap kali refresh berhasil.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadAccounts()}
+                  disabled={loadingAccounts}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${
+                      loadingAccounts ? "animate-spin" : ""
+                    }`}
+                  />
+                  Refresh
+                </button>
+              </div>
+
+              {loadingAccounts && accounts.length === 0 ? (
+                <div className="py-12 text-center text-xs text-slate-400">
+                  <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-indigo-400" />
+                  Memuat daftar akun...
+                </div>
+              ) : accounts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-800 py-12 text-center text-xs text-slate-400">
+                  Belum ada akun terdaftar. Tambahkan akun poster/voter di form
+                  sebelah kiri.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {accounts.map((acc) => (
+                    <div
+                      key={acc.id}
+                      className={`rounded-xl border p-4 transition ${
+                        acc.isActive
+                          ? "border-slate-800 bg-slate-950/70"
+                          : "border-slate-800/60 bg-slate-950/30 opacity-65"
+                      }`}
+                    >
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-3 min-w-0">
+                          {acc.avatarUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={acc.avatarUrl}
+                              alt={acc.name}
+                              className="h-10 w-10 shrink-0 rounded-full border border-slate-700 object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-500/20 text-sm font-bold text-indigo-300">
+                              {acc.name.slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-semibold text-white">
+                                {acc.name}
+                              </p>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                                  acc.isActive
+                                    ? "bg-emerald-500/15 text-emerald-300"
+                                    : "bg-slate-800 text-slate-400"
+                                }`}
+                              >
+                                {acc.isActive ? "Aktif" : "Nonaktif"}
+                              </span>
+                            </div>
+                            <p className="truncate text-xs text-slate-400">
+                              {acc.email || "-"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select
+                            value={acc.role}
+                            disabled={updatingAccountId === acc.id}
+                            onChange={(e) =>
+                              void handleChangeAccountRole(
+                                acc,
+                                e.target.value as AccountRole
+                              )
+                            }
+                            className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
+                          >
+                            <option value="both">both</option>
+                            <option value="poster">poster</option>
+                            <option value="voter">voter</option>
+                          </select>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleRefreshAccount(acc.id)}
+                            disabled={refreshingAccountId === acc.id}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1.5 text-xs font-medium text-indigo-300 transition hover:bg-indigo-500/20 disabled:opacity-50"
+                          >
+                            {refreshingAccountId === acc.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            )}
+                            Test Refresh Token
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleToggleAccountActive(acc)}
+                            disabled={updatingAccountId === acc.id}
+                            className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+                              acc.isActive
+                                ? "border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                            }`}
+                          >
+                            {acc.isActive ? "Nonaktifkan" : "Aktifkan"}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteAccount(acc)}
+                            disabled={updatingAccountId === acc.id}
+                            aria-label={`Hapus akun ${acc.name}`}
+                            className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-2.5 text-[11px] text-slate-400">
+                        <div className="flex flex-wrap gap-3 font-mono">
+                          <span>AT: {acc.accessTokenPreview || "-"}</span>
+                          <span>RT: {acc.refreshTokenPreview || "-"}</span>
+                        </div>
+                        <span>Update: {formatDateTime(acc.updatedAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
