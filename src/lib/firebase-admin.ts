@@ -52,6 +52,7 @@ export interface SettingsDoc {
   isPostEnabled: boolean;
   isLikeEnabled: boolean;
   isCommentEnabled: boolean;
+  isReactionEnabled: boolean;
   posterUsername: string;
   likesPerAccountPerRun: number;
   commentsPerRun: number;
@@ -114,6 +115,7 @@ export function getDefaultSettings(): SettingsDoc {
     isPostEnabled: false,
     isLikeEnabled: false,
     isCommentEnabled: false,
+    isReactionEnabled: true,
     posterUsername:
       process.env.TARGET_POSTER_USERNAME?.trim() || DEFAULT_POSTER_USERNAME,
     likesPerAccountPerRun: 7,
@@ -157,6 +159,10 @@ export async function getSettingsDoc(): Promise<SettingsDoc> {
       typeof data.isCommentEnabled === "boolean"
         ? data.isCommentEnabled
         : defaults.isCommentEnabled,
+    isReactionEnabled:
+      typeof data.isReactionEnabled === "boolean"
+        ? data.isReactionEnabled
+        : defaults.isReactionEnabled,
     posterUsername:
       typeof data.posterUsername === "string" && data.posterUsername.trim()
         ? data.posterUsername.trim()

@@ -873,3 +873,87 @@ export async function postChapterComment(
     refreshed,
   };
 }
+
+export interface ChapterPageReactionResult {
+  success: boolean;
+  reactionId: number;
+  myReaction?: number;
+  auraGranted?: number;
+  auraRemainingToday?: number;
+  error?: string;
+  account: AccountDoc;
+  refreshed: boolean;
+}
+
+/**
+ * Sends a chapter page reaction to Shinigami (+10 Aura daily bonus)
+ * with automatic WorkOS token refresh & 1x retry on 401/403.
+ */
+export async function setChapterPageReaction(
+  account: AccountDoc,
+  pageKey: string,
+  reactionId?: number
+): Promise<ChapterPageReactionResult> {
+  const chosenReactionId =
+    typeof reactionId === "number" && reactionId >= 1 && reactionId <= 6
+      ? Math.floor(reactionId)
+      : Math.random() < 0.7
+        ? 1
+        : [2, 3, 4][Math.floor(Math.random() * 3)];
+
+  const url = `${SHINIGAMI_COMMENT_API_BASE}/pages/reactions`;
+
+  const { response, account: updatedAccount, refreshed } =
+    await fetchWithAutoRefresh(account, (token) =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          ...SHINIGAMI_HEADERS,
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action: "set",
+          page_key: pageKey,
+          reaction_id: chosenReactionId,
+        }),
+        signal: AbortSignal.timeout(20_000),
+        cache: "no-store",
+      })
+    );
+
+  const json = (await response.json().catch(() => ({}))) as {
+    my_reaction?: number;
+    aura_granted?: number;
+    aura_remaining_today?: number;
+    message?: string;
+    error?: string;
+  };
+
+  if (response.ok || response.status === 201) {
+    return {
+      success: true,
+      reactionId: chosenReactionId,
+      myReaction:
+        typeof json.my_reaction === "number"
+          ? json.my_reaction
+          : chosenReactionId,
+      auraGranted:
+        typeof json.aura_granted === "number" ? json.aura_granted : 0,
+      auraRemainingToday:
+        typeof json.aura_remaining_today === "number"
+          ? json.aura_remaining_today
+          : undefined,
+      account: updatedAccount,
+      refreshed,
+    };
+  }
+
+  return {
+    success: false,
+    reactionId: chosenReactionId,
+    error: json?.message || json?.error || `HTTP ${response.status}`,
+    account: updatedAccount,
+    refreshed,
+  };
+}

@@ -66,6 +66,10 @@ export async function POST(request: NextRequest) {
         typeof body.isCommentEnabled === "boolean"
           ? body.isCommentEnabled
           : current.isCommentEnabled,
+      isReactionEnabled:
+        typeof body.isReactionEnabled === "boolean"
+          ? body.isReactionEnabled
+          : current.isReactionEnabled,
       posterUsername:
         typeof body.posterUsername === "string" && body.posterUsername.trim()
           ? body.posterUsername.trim()

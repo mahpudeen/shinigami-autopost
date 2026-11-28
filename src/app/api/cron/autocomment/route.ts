@@ -11,6 +11,7 @@ import {
   getChapterComments,
   getLatestMangas,
   postChapterComment,
+  setChapterPageReaction,
 } from "@/lib/shinigami-api";
 
 function sleep(ms: number): Promise<void> {
@@ -19,6 +20,10 @@ function sleep(ms: number): Promise<void> {
 
 function randomCommentDelayMs(): number {
   return 1500 + Math.floor(Math.random() * 1001); // 1.5s - 2.5s
+}
+
+function randomReactionDelayMs(): number {
+  return 500 + Math.floor(Math.random() * 501); // 500ms - 1000ms
 }
 
 async function handleAutoComment(request: NextRequest) {
@@ -87,6 +92,7 @@ async function handleAutoComment(request: NextRequest) {
       commenterAccounts[Math.floor(Math.random() * commenterAccounts.length)];
     const targetUsernameLower = currentAccount.username.toLowerCase();
     const targetCount = settings.commentsPerRun || 3;
+    const isReactionEnabled = settings.isReactionEnabled;
 
     const latestMangas = await getLatestMangas(20, 0);
     const usedTemplates = new Set<string>();
@@ -99,11 +105,19 @@ async function handleAutoComment(request: NextRequest) {
       content: string;
       pageKey: string;
       commentId?: number;
+      reactionSent: boolean;
+      reactionId?: number;
+      myReaction?: number;
+      auraGranted?: number;
+      auraRemainingToday?: number;
+      reactionError?: string;
     }> = [];
 
     let skippedAlreadyCommented = 0;
     let failedAttempts = 0;
     let tokenRefreshed = false;
+    let totalAuraGranted = 0;
+    let auraRemainingToday: number | null = null;
 
     outerLoop: for (const manga of latestMangas) {
       if (!Array.isArray(manga.chapters) || manga.chapters.length === 0) {
@@ -150,6 +164,47 @@ async function handleAutoComment(request: NextRequest) {
         }
 
         if (postRes.ok) {
+          const pageKey = `manga:${manga.manga_id}:chapter:${ch.chapter_id}`;
+          let reactionSent = false;
+          let reactionId: number | undefined;
+          let myReaction: number | undefined;
+          let auraGranted: number | undefined;
+          let itemAuraRemainingToday: number | undefined;
+          let reactionError: string | undefined;
+
+          if (isReactionEnabled) {
+            await sleep(randomReactionDelayMs());
+            try {
+              const reactionRes = await setChapterPageReaction(
+                currentAccount,
+                pageKey
+              );
+              currentAccount = reactionRes.account;
+              if (reactionRes.refreshed) {
+                tokenRefreshed = true;
+              }
+              reactionSent = reactionRes.success;
+              reactionId = reactionRes.reactionId;
+              myReaction = reactionRes.myReaction;
+              auraGranted = reactionRes.auraGranted;
+              itemAuraRemainingToday = reactionRes.auraRemainingToday;
+              reactionError = reactionRes.error;
+
+              if (typeof reactionRes.auraGranted === "number") {
+                totalAuraGranted += reactionRes.auraGranted;
+              }
+              if (typeof reactionRes.auraRemainingToday === "number") {
+                auraRemainingToday = reactionRes.auraRemainingToday;
+              }
+            } catch (reactionErr) {
+              reactionSent = false;
+              reactionError =
+                reactionErr instanceof Error
+                  ? reactionErr.message
+                  : "Gagal mengirim reaction.";
+            }
+          }
+
           results.push({
             mangaId: manga.manga_id,
             mangaTitle: manga.title,
@@ -157,8 +212,16 @@ async function handleAutoComment(request: NextRequest) {
             chapterId: ch.chapter_id,
             chapterNumber: ch.chapter_number,
             content: picked.content,
-            pageKey: `manga:${manga.manga_id}:chapter:${ch.chapter_id}`,
+            pageKey,
             commentId: postRes.commentId,
+            reactionSent,
+            ...(reactionId !== undefined ? { reactionId } : {}),
+            ...(myReaction !== undefined ? { myReaction } : {}),
+            ...(auraGranted !== undefined ? { auraGranted } : {}),
+            ...(itemAuraRemainingToday !== undefined
+              ? { auraRemainingToday: itemAuraRemainingToday }
+              : {}),
+            ...(reactionError ? { reactionError } : {}),
           });
 
           if (results.length < targetCount) {
@@ -180,8 +243,11 @@ async function handleAutoComment(request: NextRequest) {
       ok: true,
       skipped: false,
       manual: auth.isManualTest,
+      isReactionEnabled,
       targetCount,
       totalSent: results.length,
+      totalAuraGranted,
+      auraRemainingToday,
       skippedAlreadyCommented,
       failedAttempts,
       accountId: currentAccount.id,

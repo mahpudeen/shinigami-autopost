@@ -57,6 +57,7 @@ interface SettingsState {
   isPostEnabled: boolean;
   isLikeEnabled: boolean;
   isCommentEnabled: boolean;
+  isReactionEnabled: boolean;
   posterUsername: string;
   likesPerAccountPerRun: number;
   commentsPerRun: number;
@@ -109,14 +110,23 @@ interface CommentRunResultItem {
   content: string;
   pageKey: string;
   commentId?: number;
+  reactionSent?: boolean;
+  reactionId?: number;
+  myReaction?: number;
+  auraGranted?: number;
+  auraRemainingToday?: number;
+  reactionError?: string;
 }
 
 interface CommentTestResponse {
   ok: boolean;
   skipped?: boolean;
   reason?: string;
+  isReactionEnabled?: boolean;
   totalSent: number;
   targetCount: number;
+  totalAuraGranted?: number;
+  auraRemainingToday?: number | null;
   skippedAlreadyCommented?: number;
   failedAttempts?: number;
   accountName?: string;
@@ -238,6 +248,7 @@ export default function DashboardPage() {
     isPostEnabled: false,
     isLikeEnabled: false,
     isCommentEnabled: false,
+    isReactionEnabled: true,
     posterUsername: "mahpudeen",
     likesPerAccountPerRun: 7,
     commentsPerRun: 3,
@@ -704,9 +715,13 @@ export default function DashboardPage() {
         throw new Error(data.error || "Test Run Comment gagal.");
       }
       setCommentTestResult(data);
+      const auraSummary =
+        typeof data.totalAuraGranted === "number" && data.totalAuraGranted > 0
+          ? ` • +${data.totalAuraGranted} Aura`
+          : "";
       notify(
         "success",
-        `Auto-Comment selesai: ${data.totalSent} komentar terkirim via @${data.accountUsername || "-"} (${data.skippedAlreadyCommented ?? 0} chapter dilewati karena sudah dikomentari).`
+        `Auto-Comment selesai: ${data.totalSent} komentar terkirim via @${data.accountUsername || "-"}${auraSummary} (${data.skippedAlreadyCommented ?? 0} chapter dilewati karena sudah dikomentari).`
       );
       await Promise.all([loadSettings(), loadLatestMangas()]);
     } catch (err) {
@@ -1899,6 +1914,45 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
+                {/* Toggle Auto-Reaction Chapter (+10 Aura) */}
+                <div className="flex items-center justify-between gap-4 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-amber-200">
+                      <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                      Auto-Reaction Chapter (+10 Aura/hari)
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Otomatis kirim page reaction setelah komentar sukses
+                      (weighted random: 70% Reaction #1, 30% #2–#4). Non-blocking
+                      jika kuota aura harian sudah habis.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.isReactionEnabled}
+                    disabled={savingSettings || loadingSettings}
+                    onClick={() =>
+                      void handleSaveSettings({
+                        isReactionEnabled: !settings.isReactionEnabled,
+                      })
+                    }
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.isReactionEnabled
+                        ? "bg-amber-500"
+                        : "bg-slate-700"
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                        settings.isReactionEnabled
+                          ? "translate-x-5"
+                          : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+
                 {/* Output Test Run Comment */}
                 {commentTestResult && (
                   <div className="space-y-2.5 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
@@ -1907,11 +1961,23 @@ export default function DashboardPage() {
                         Hasil Test Run Auto-Comment ({commentTestResult.totalSent}
                         /{commentTestResult.targetCount} terkirim)
                       </span>
-                      <span className="text-[11px] text-slate-400">
-                        Akun: @{commentTestResult.accountUsername || "-"} • Skip
-                        duplikat:{" "}
-                        {commentTestResult.skippedAlreadyCommented ?? 0}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                        {typeof commentTestResult.totalAuraGranted ===
+                          "number" && (
+                          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-semibold text-amber-300 ring-1 ring-amber-500/30">
+                            +{commentTestResult.totalAuraGranted} Aura
+                            {typeof commentTestResult.auraRemainingToday ===
+                            "number"
+                              ? ` (Sisa hari ini: ${commentTestResult.auraRemainingToday})`
+                              : ""}
+                          </span>
+                        )}
+                        <span>
+                          Akun: @{commentTestResult.accountUsername || "-"} • Skip
+                          duplikat:{" "}
+                          {commentTestResult.skippedAlreadyCommented ?? 0}
+                        </span>
+                      </div>
                     </div>
 
                     {commentTestResult.results.length === 0 ? (
@@ -1941,6 +2007,22 @@ export default function DashboardPage() {
                               >
                                 {item.isProject ? "Project" : "Mirror"}
                               </span>
+                              {item.reactionSent && (
+                                <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30">
+                                  Reaction #{item.myReaction ?? item.reactionId ?? 1}
+                                  {typeof item.auraGranted === "number"
+                                    ? ` • +${item.auraGranted} Aura`
+                                    : ""}
+                                  {typeof item.auraRemainingToday === "number"
+                                    ? ` (Sisa kuota hari ini: ${item.auraRemainingToday})`
+                                    : ""}
+                                </span>
+                              )}
+                              {!item.reactionSent && item.reactionError && (
+                                <span className="rounded bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-300">
+                                  Reaction gagal: {item.reactionError}
+                                </span>
+                              )}
                             </div>
                             <p className="mt-1.5 text-slate-300">
                               &ldquo;{item.content}&rdquo;
